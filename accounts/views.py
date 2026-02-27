@@ -47,7 +47,6 @@ class VerifyEmailView(APIView):
         else:
             return Response({"error": "Invalid or expired token"}, status=400)
 
-# Create your views here.
 class JWTRegisterView(APIView):
     permission_classes = [AllowAny]
 
@@ -60,36 +59,34 @@ class JWTRegisterView(APIView):
             return Response({"error": "Email, username, and password are required"}, status=400)
 
         # Check if user exists
-        user_exists = User.objects.filter(username=username).exists() or User.objects.filter(email=email).exists()
-
-        if user_exists:
-            # Don't leak info — just say email sent
+        if User.objects.filter(username=username).exists() or User.objects.filter(email=email).exists():
+            # Don't leak info — just respond with generic message
             return Response({"message": "If an account exists, a verification email has been sent"}, status=200)
 
-        # Create user but mark as inactive until email verified
+        # Create user
         user = User.objects.create_user(username=username, email=email, password=password, is_active=False)
-        Profile.objects.get_or_create(user=user)  # ← add this
+
+        # Create Profile safely
+        Profile.objects.get_or_create(user=user)
 
         # Generate UID and token
         uidb64 = urlsafe_base64_encode(force_bytes(user.pk)).rstrip("=")
-
         token = account_activation_token.make_token(user)
-
         verify_url = f"http://127.0.0.1:3000/verify-email?uid={uidb64}&token={quote(token, safe='')}"
 
-        # Send email
-        subject = "Verify your CreekTube account"
-        message = f"Hi {username},\n\nPlease verify your account by clicking the link below:\n\n{verify_url}\n\nIf you did not register, ignore this email."
-        send_mail(
-            subject,
-            message,
-            settings.DEFAULT_FROM_EMAIL,
-            [email],
-            fail_silently=False,
-        )
+        # Send email safely
+        try:
+            send_mail(
+                "Verify your CreekTube account",
+                f"Hi {username},\n\nVerify your account: {verify_url}\n\nIgnore if you didn't register.",
+                settings.DEFAULT_FROM_EMAIL,
+                [email],
+                fail_silently=False
+            )
+        except Exception as e:
+            print("Email failed:", e)  # log error, do not crash
 
         return Response({"message": "If an account exists, a verification email has been sent"}, status=200)
-
 User = get_user_model()
 
 class JWTLoginView(APIView):
