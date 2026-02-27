@@ -1,1 +1,1 @@
-web: gunicorn burst.wsgi
+web: gunicorn burst.wsgi:application --workers 4
