@@ -64,12 +64,12 @@ REST_FRAMEWORK = {
     ),
 }
 
-CSRF_TRUSTED_ORIGINS = [
-    "creektube-frontend.vercel.app",
+CORS_ALLOWED_ORIGINS = [
+    "https://creektube-frontend.vercel.app",
 ]
 
-CORS_ALLOWED_ORIGINS = [
-    "creektube-frontend.vercel.app",
+CORS_ALLOWED_ORIGIN_REGEXES = [
+    r"^https://.*\.vercel\.app$",
 ]
 # CORS_ORIGIN_ALLOW_ALL = False
 # CORS_ORIGIN_WHITELIST = (
