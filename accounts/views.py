@@ -158,7 +158,7 @@ class JWTUpdateEmailView(APIView):
             # Generate token and send email verification
             token = default_token_generator.make_token(user)
             uid = urlsafe_base64_encode(force_bytes(user.pk))
-            reset_email_link = f"https://localhost:8000/reset-email/{uid}/{token}"
+            reset_email_link = f"https://creektube-production.up.railway.app/reset-email/{uid}/{token}"
 
             send_mail(
                 subject="Email verification",
