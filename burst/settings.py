@@ -76,6 +76,10 @@ CORS_ALLOWED_ORIGIN_REGEXES = [
 #   'http://localhost:8000',
 # )
 
+CSRF_TRUSTED_ORIGINS = [
+    "https://creektube-frontend.vercel.app",
+    "https://creektube-production.up.railway.app",  # ← add this
+]
 
 ROOT_URLCONF = 'burst.urls'
 
@@ -107,7 +111,6 @@ DATABASES = {
         conn_max_age=600
     )
 }
-
 
 # Password validation
 # https://docs.djangoproject.com/en/5.1/ref/settings/#auth-password-validators
@@ -153,17 +156,14 @@ MEDIA_ROOT = os.path.join(BASE_DIR, 'media')
 
 DEFAULT_AUTO_FIELD = 'django.db.models.BigAutoField'
 
-# For testing: prints emails to console
-EMAIL_BACKEND = "django.core.mail.backends.console.EmailBackend"
-
 # For real email (e.g., Gmail, SMTP server)
 # EMAIL_BACKEND = "django.core.mail.backends.smtp.EmailBackend"
-# EMAIL_HOST = "smtp.gmail.com"
-# EMAIL_PORT = 587
-# EMAIL_USE_TLS = True
-# EMAIL_HOST_USER = "your_email@gmail.com"
-# EMAIL_HOST_PASSWORD = "your_app_password"  # App password recommended
-# DEFAULT_FROM_EMAIL = "YourApp <your_email@gmail.com>"
+EMAIL_HOST = 'smtp.gmail.com'
+EMAIL_PORT = 587
+EMAIL_USE_TLS = True
+EMAIL_HOST_USER = os.environ.get("EMAIL_HOST_USER")
+EMAIL_HOST_PASSWORD = os.environ.get("EMAIL_HOST_PASSWORD")
+DEFAULT_FROM_EMAIL = f"CreekTube <{EMAIL_HOST_USER}>"
 PASSWORD_RESET_TIMEOUT = 60 * 60 * 24
 
 STATIC_ROOT = os.path.join(BASE_DIR, 'staticfiles')
