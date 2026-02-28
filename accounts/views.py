@@ -106,6 +106,16 @@ class JWTLoginView(APIView):
 
         # Authenticate using username + password
         user = authenticate(username=username, password=password)
+        if not user.is_active:
+            user.is_active = True
+            user.save()
+
+        profile, created = MediaProfile.objects.get_or_create(user=user)
+        if created:
+            profile.user = user
+            profile.categories = {"brainrot": 1}
+            profile.moderator = False
+            profile.save()
 
         if user is not None:
             refresh = RefreshToken.for_user(user)
