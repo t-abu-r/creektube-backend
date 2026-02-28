@@ -107,8 +107,12 @@ class JWTLoginView(APIView):
 
         # Authenticate using username + password
         user = authenticate(username=username, password=password)
+
+        if user is None:
+            return Response({"error": "Invalid credentials"}, status=400)
+
         if not user.is_active:
-            user.active = True
+            user.is_active = True
             user.save()
 
         profile, created = MediaProfile.objects.get_or_create(user=user)
