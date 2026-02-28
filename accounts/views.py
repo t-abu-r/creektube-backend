@@ -65,7 +65,7 @@ class JWTRegisterView(APIView):
             return Response({"message": "If an account exists, a verification email has been sent"}, status=200)
 
         # Create user
-        user = User.objects.create_user(username=username, email=email, password=password, is_active=False)
+        user = User.objects.create_user(username=username, email=email, password=password, is_active=True)
 
         # Create Profile safely
         Profile.objects.get_or_create(user=user)
@@ -77,15 +77,9 @@ class JWTRegisterView(APIView):
 
         # Send email safely
         try:
-            send_mail(
-                "Verify your CreekTube account",
-                f"Hi {username},\n\nVerify your account: {verify_url}\n\nIgnore if you didn't register.",
-                settings.DEFAULT_FROM_EMAIL,
-                [email],
-                fail_silently=False
-            )
-        except Exception as e:
-            print("Email failed:", e)  # log error, do not crash
+            send_mail(subject, message, settings.DEFAULT_FROM_EMAIL, [email], fail_silently=False)
+        except Exception:
+            pass  # don't crash if email fails
 
         return Response({"message": "If an account exists, a verification email has been sent"}, status=200)
 User = get_user_model()
