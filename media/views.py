@@ -101,7 +101,7 @@ class LoginWatchVideo(APIView):
             return Response({"detail": "Video ID not provided"}, status=status.HTTP_400_BAD_REQUEST)
 
         approved_videos = Video.objects.filter(is_approved=True)
-        video = approved_videos.prefetch_related("comments__author").get(id=video_id)
+        video = get_object_or_404(approved_videos.prefetch_related("comments__author"), id=video_id)
 
         # Boost category
         profile, _ = MediaProfile.objects.get_or_create(user=request.user)
