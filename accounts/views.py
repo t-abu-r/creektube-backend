@@ -108,7 +108,7 @@ class JWTLoginView(APIView):
         # Authenticate using username + password
         user = authenticate(username=username, password=password)
         if not user.is_active:
-            user.is_active = True
+            user.active = True
             user.save()
 
         profile, created = MediaProfile.objects.get_or_create(user=user)
