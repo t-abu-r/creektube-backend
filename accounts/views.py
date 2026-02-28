@@ -97,7 +97,7 @@ class JWTLoginView(APIView):
         try:
             user_obj = User.objects.get(email=email, username=username)
         except User.DoesNotExist:
-            return Response({"error": "Email or username is incorrect"}, status=400)
+            return Response({"error": "Email or username or password is incorrect"}, status=400)
 
         # Authenticate using username + password
         user = authenticate(username=username, password=password)
@@ -124,6 +124,7 @@ class JWTLoginView(APIView):
             })
 
         return Response({"error": "Password is incorrect"}, status=400)
+
 class JWTLogoutView(APIView):
     permission_classes = [IsAuthenticated]
     def post(self, request, *args, **kwargs):

@@ -11,6 +11,6 @@ urlpatterns = [
     path("uploadcommentvideo/", UploadCommentVideo.as_view(), name="UploadCommentVideo"),
     path("comment/", CommentVideo.as_view(), name="CommentVideo"),
     path("mod-panel/", ModPanel.as_view()),
-    path("getmod/", IfModerator.as_view()),
+    path("getmod/", IfModerator.as_view(), name="GetMod"),
     path("searchvideo/", SearchVideo.as_view(), name="SearchVideo"),
 ]
