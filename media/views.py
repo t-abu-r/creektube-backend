@@ -103,25 +103,21 @@ class LoginWatchVideo(APIView):
         approved_videos = Video.objects.filter(is_approved=True)
         video = get_object_or_404(approved_videos.prefetch_related("comments__author"), id=video_id)
 
-        # Boost category
+        # Boost category score
         profile, _ = MediaProfile.objects.get_or_create(user=request.user)
-        video_category = video.category
-        if video_category:
-            cat_slug = video_category.slug
+        if video.category:
+            cat_slug = video.category.slug
             categories = profile.categories
             categories[cat_slug] = categories.get(cat_slug, 0) + 1
             profile.categories = categories
             profile.save()
 
-        related_videos = approved_videos.filter(
-            category=video_category
-        ).exclude(id=video_id).order_by('-timestamp')[:5]
+        related_videos = approved_videos.filter(category=video.category).exclude(id=video_id).order_by('-timestamp')[:5]
 
         return Response({
             "video": VideoSerializer(video, context={'request': request}).data,
-            "related_videos": VideoSerializer(related_videos, many=True, context={'request': request}).data,
+            "related_videos": VideoSerializer(related_videos, many=True, context={'request': request}).data
         }, status=status.HTTP_200_OK)
-
 
 class GuestWatchVideo(APIView):
     permission_classes = [AllowAny]
