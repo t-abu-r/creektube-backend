@@ -6,4 +6,4 @@ cmds = [
 ]
 
 [phases.deploy]
-cmd = "python manage.py migrate --noinput && gunicorn burst.wsgi:application --workers 2 --bind 0.0.0.0:$PORT"
+cmd = "python manage.py migrate --noinput && gunicorn burst.wsgi:application --workers 2 --bind 0.0.0.0:$PORT --timeout 300"
