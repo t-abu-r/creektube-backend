@@ -139,6 +139,8 @@ class GuestWatchVideo(APIView):
             "video": VideoSerializer(video, context={'request': request}).data,
             "related_videos": VideoSerializer(related_videos, many=True, context={'request': request}).data,
         }, status=status.HTTP_200_OK)
+
+
 class SearchVideo(APIView):
     permission_classes = [AllowAny]
 
