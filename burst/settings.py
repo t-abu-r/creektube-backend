@@ -184,3 +184,6 @@ ALLOWED_HOSTS = ['*']
 SECRET_KEY = os.environ.get('SECRET_KEY', 'your-default-secret-key')
 
 DEBUG = os.environ.get('DEBUG', 'False') == 'True'
+
+SECURE_PROXY_SSL_HEADER = ('HTTP_X_FORWARDED_PROTO', 'https')
+USE_X_FORWARDED_HOST = True
