@@ -46,16 +46,15 @@ INSTALLED_APPS = [
     'django.contrib.contenttypes',
     'django.contrib.sessions',
     'django.contrib.messages',
+    'cloudinary_storage',  # ← before staticfiles
     'django.contrib.staticfiles',
-    'cloudinary_storage',  # ← add
-        'cloudinary',          # ← add
+    'cloudinary',
     'corsheaders',
     'rest_framework',
     'accounts',
     "media",
     "rest_framework_simplejwt.token_blacklist",
 ]
-
 MIDDLEWARE = [
     'corsheaders.middleware.CorsMiddleware',
 #     "burst.middleware.RangeFileMiddleware",
