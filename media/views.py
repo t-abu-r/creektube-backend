@@ -9,6 +9,9 @@ from .Serializers import VideoSerializer
 from .models import Video, Comment, CategoryVideo, MediaProfile as Profile, MediaProfile
 from django.db.models import Case, When, Q, IntegerField, Count
 from django.views.decorators.csrf import csrf_exempt
+import os
+import subprocess
+from django.conf import settings
 from django.utils.decorators import method_decorator
 
 
@@ -245,6 +248,7 @@ class UploadCommentVideo(APIView):
 # ---------------------------
 # Upload Video API
 # ---------------------------
+
 class UploadVideo(APIView):
     permission_classes = [IsAuthenticated]
 
@@ -256,29 +260,45 @@ class UploadVideo(APIView):
         description = request.data.get("description")
         thumbnail = request.data.get("thumbnail")
 
-
-        # Validation
         if not video_file:
-            return Response({"message": "No video provided"}, status=status.HTTP_400_BAD_REQUEST)
-        if not title:
-            return Response({"message": "No title provided"}, status=status.HTTP_400_BAD_REQUEST)
-        if not category:
-            return Response({'message': 'No category provided'}, status=status.HTTP_400_BAD_REQUEST)
-        if not thumbnail:
-            return Response({"message": "No thumbnail provided"}, status=status.HTTP_400_BAD_REQUEST)
+            return Response({"message": "No video provided"}, status=400)
 
-        category_obj, _ = CategoryVideo.objects.get_or_create(name=category ,slug=category)
+        category_obj, _ = CategoryVideo.objects.get_or_create(
+            name=category,
+            slug=category
+        )
 
-        video = Video.objects.create(
+        # Save original first
+        video_instance = Video.objects.create(
             video=video_file,
             author=author,
             title=title,
-            category=category_obj,  # ← pass the object not the string
+            category=category_obj,
             description=description,
             thumbnail=thumbnail,
             timestamp=timezone.now(),
             is_approved=False
         )
 
-        serializer = VideoSerializer(video, context={'request': request})
-        return Response(serializer.data, status=status.HTTP_201_CREATED)
+        original_path = video_instance.video.path
+        mp4_path = original_path.rsplit('.', 1)[0] + ".mp4"
+
+        # Convert using FFmpeg
+        subprocess.run([
+            "ffmpeg",
+            "-i", original_path,
+            "-c:v", "libx264",
+            "-c:a", "aac",
+            "-movflags", "+faststart",
+            mp4_path
+        ])
+
+        # Replace file field with converted file
+        video_instance.video.name = video_instance.video.name.rsplit('.', 1)[0] + ".mp4"
+        video_instance.save()
+
+        # Optional: delete original
+        os.remove(original_path)
+
+        serializer = VideoSerializer(video_instance, context={'request': request})
+        return Response(serializer.data, status=201)

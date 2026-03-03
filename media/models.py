@@ -1,5 +1,6 @@
 from django.db import models
 from django.contrib.auth.models import User
+from cloudinary.models import CloudinaryField
 
 # -----------------------------
 # Category model (global)
@@ -43,8 +44,8 @@ class Video(models.Model):
 
     title = models.CharField(max_length=100)
     description = models.TextField()
-    thumbnail = models.ImageField(upload_to='thumbnails/')
-    video = models.FileField(upload_to='videos/')
+    thumbnail = CloudinaryField(resource_type="image")
+    video = CloudinaryField(resource_type="video")
     timestamp = models.DateTimeField(auto_now_add=True)
     is_approved = models.BooleanField(default=False)
 

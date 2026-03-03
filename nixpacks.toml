@@ -1,9 +1,19 @@
-[phases.build]
+[phases.setup]
+packages = ["python3", "python3-pip", "gcc"]
+
+[phases.install]
 cmds = [
-    "python -m pip install --upgrade pip",
-    "pip install -r requirements.txt",
-    "python manage.py collectstatic --noinput"
+    "pip3 install --upgrade pip",
+    "pip3 install -r requirements.txt"
 ]
 
-[phases.deploy]
-cmd = "python manage.py migrate --noinput && gunicorn burst.wsgi:application --workers 2 --bind 0.0.0.0:$PORT --timeout 300"
+[phases.build]
+cmds = [
+    "python3 manage.py collectstatic --noinput"
+]
+
+[phases.start]
+cmds = [
+    "python3 manage.py migrate",
+    "gunicorn burst.wsgi:application --workers 2 --bind 0.0.0.0:$PORT"
+]
