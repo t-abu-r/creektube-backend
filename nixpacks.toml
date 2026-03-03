@@ -1,20 +1,27 @@
+# nixpacks.toml
+[metadata]
+python_version = "3.12"
+# This tells Nixpacks to provide Python 3.12 automatically
+
 [env]
-PYTHON_VERSION = "3.12"
+# Optional environment variables (Railway/Vercel secrets)
+CLOUDINARY_URL = "${CLOUDINARY_URL}"  # set this in your deploy platform
 
 [phases.setup]
-# Ensure Python is installed before you try to use it
 cmds = [
-    "nix-env -iA nixpkgs.python312",   # installs Python 3.12
     "python3 -m ensurepip --upgrade",
     "python3 -m pip install --upgrade pip"
 ]
 
 [phases.build]
 cmds = [
+    # Create virtual environment
     "python3 -m venv --copies /opt/venv",
+    # Activate and install requirements
     ". /opt/venv/bin/activate && pip install -r requirements.txt",
-    "python3 manage.py collectstatic --noinput"
+    # Collect static files
+    ". /opt/venv/bin/activate && python3 manage.py collectstatic --noinput"
 ]
 
 [phases.deploy]
-cmd = "python3 manage.py migrate --noinput && gunicorn burst.wsgi:application --workers 2 --bind 0.0.0.0:$PORT --timeout 300"
+cmd = ". /opt/venv/bin/activate && python3 manage.py migrate --noinput && gunicorn burst.wsgi:application --workers 2 --bind 0.0.0.0:$PORT --timeout 300"
