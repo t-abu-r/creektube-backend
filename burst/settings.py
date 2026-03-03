@@ -17,13 +17,6 @@ import cloudinary
 import cloudinary.uploader
 import cloudinary.api
 
-# Cloudinary credentials
-CLOUDINARY_STORAGE = {
-    'CLOUD_NAME': os.environ.get('CLOUDINARY_CLOUD_NAME'),
-    'API_KEY': os.environ.get('CLOUDINARY_API_KEY'),
-    'API_SECRET': os.environ.get('CLOUDINARY_API_SECRET')
-}
-
 # Build paths inside the project like this: BASE_DIR / 'subdir'.
 BASE_DIR = Path(__file__).resolve().parent.parent
 
@@ -46,14 +39,14 @@ INSTALLED_APPS = [
     'django.contrib.contenttypes',
     'django.contrib.sessions',
     'django.contrib.messages',
-    'cloudinary_storage',  # ← before staticfiles
     'django.contrib.staticfiles',
-    'cloudinary',
     'corsheaders',
     'rest_framework',
     'accounts',
     "media",
     "rest_framework_simplejwt.token_blacklist",
+    'cloudinary_storage',
+    'cloudinary',
 ]
 MIDDLEWARE = [
     'corsheaders.middleware.CorsMiddleware',
@@ -69,6 +62,7 @@ MIDDLEWARE = [
 ]
 REST_FRAMEWORK = {
     "DEFAULT_AUTHENTICATION_CLASSES": (
+        7,
         "rest_framework_simplejwt.authentication.JWTAuthentication",
     ),
 }
@@ -157,12 +151,9 @@ USE_TZ = True
 
 STATIC_URL = 'static/'
 BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-# Tell Django to use Cloudinary for media storage
-DEFAULT_FILE_STORAGE = 'cloudinary_storage.storage.MediaCloudinaryStorage'
 
 # Optional: media URL
-MEDIA_URL = '/media/'                # URL prefix
-MEDIA_ROOT = os.path.join(BASE_DIR, 'media')
+MEDIA_URL = '/media/'
 # Default primary key field type
 # https://docs.djangoproject.com/en/5.1/ref/settings/#default-auto-field
 
@@ -188,3 +179,15 @@ DEBUG = os.environ.get('DEBUG', 'False') == 'True'
 
 SECURE_PROXY_SSL_HEADER = ('HTTP_X_FORWARDED_PROTO', 'https')
 USE_X_FORWARDED_HOST = True
+
+# Cloudinary credentials
+CLOUDINARY_STORAGE = {
+    'CLOUD_NAME': os.environ.get('CLOUDINARY_CLOUD_NAME'),
+    'API_KEY': os.environ.get('CLOUDINARY_API_KEY'),
+    'API_SECRET': os.environ.get('CLOUDINARY_API_SECRET')
+}
+
+if DEBUG:
+    MEDIA_ROOT = os.path.join(BASE_DIR, 'media')
+else:
+    DEFAULT_FILE_STORAGE = 'cloudinary_storage.storage.MediaCloudinaryStorage'
