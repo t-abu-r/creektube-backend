@@ -1,24 +1,18 @@
-# nixpacks.toml
-
 [phases.setup]
-# Install Python and other dependencies
 packages = ["python3", "python3-pip", "gcc", "libffi-dev", "libssl-dev", "python3-dev"]
 
 [phases.install]
-# Upgrade pip and install project requirements globally
 cmds = [
     "pip3 install --upgrade pip",
     "pip3 install -r requirements.txt"
 ]
 
 [phases.build]
-# Optional: collect static files if needed
 cmds = [
     "python3 manage.py collectstatic --noinput"
 ]
 
 [phases.start]
-# Run migrations and start Gunicorn
 cmds = [
     "python3 manage.py makemigrations",
     "python3 manage.py migrate",
