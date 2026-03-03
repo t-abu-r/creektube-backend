@@ -62,11 +62,9 @@ MIDDLEWARE = [
 ]
 REST_FRAMEWORK = {
     "DEFAULT_AUTHENTICATION_CLASSES": (
-        7,
         "rest_framework_simplejwt.authentication.JWTAuthentication",
     ),
 }
-
 CORS_ALLOWED_ORIGINS = [
     "https://creektube-frontend.vercel.app",
 ]
