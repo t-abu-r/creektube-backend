@@ -1,13 +1,10 @@
-# nixpacks.toml
 [env]
 PYTHON_VERSION = "3.12"
 
 [phases.setup]
-# Install system dependencies your Python packages may need
-packages = ["gcc" "glibc" "libffi" "openssl" "python3"]
+packages = ["gcc", "glibc", "libffi", "openssl", "python3"]
 
 [phases.install]
-# Create venv and install requirements
 cmds = [
     "python3 -m venv /opt/venv",
     ". /opt/venv/bin/activate && pip install --upgrade pip",
@@ -16,13 +13,11 @@ cmds = [
 
 [phases.build]
 cmds = [
-    # Collect static files
     ". /opt/venv/bin/activate && python manage.py collectstatic --noinput"
 ]
 
 [phases.start]
 cmds = [
-    # Run migrations and start Gunicorn
     ". /opt/venv/bin/activate && python manage.py makemigrations",
     ". /opt/venv/bin/activate && python manage.py migrate",
     ". /opt/venv/bin/activate && gunicorn burst.wsgi:application --workers 4 --bind 0.0.0.0:$PORT"
