@@ -1,5 +1,6 @@
 from django.db import models
 from django.contrib.auth.models import User
+from cloudinary.models import CloudinaryField
 
 class PlanChoices(models.TextChoices):
     FREE = "free", "Free"
@@ -8,7 +9,7 @@ class PlanChoices(models.TextChoices):
 
 class Profile(models.Model):
     user = models.OneToOneField(User, on_delete=models.CASCADE)
-    avatar = models.ImageField(upload_to="avatars/", blank=True, null=True)
+    avatar = CloudinaryField(resource_type="image")
 
 
     bio = models.TextField(blank=True, null=True)
