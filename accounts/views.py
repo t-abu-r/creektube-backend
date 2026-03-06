@@ -140,75 +140,76 @@ class JWTLogoutView(APIView):
         except Exception as e:
             return Response({"error": "Invalid or expired refresh token"}, status=HTTP_400_BAD_REQUEST)
 
-
 class UpdateProfileView(APIView):
     permission_classes = [IsAuthenticated]
-    # Required to handle FormData (Bio text + Avatar file)
     parser_classes = (MultiPartParser, FormParser)
 
     def put(self, request):
         user = request.user
-        # 1. Get the profile safely
         profile, created = Profile.objects.get_or_create(user=user)
 
-        # 2. Extract data correctly
-        # Text fields come from request.data
-        bio = request.data.get('bio')
+        response_data = {
+            "success": "Profile updated successfully",
+            "email_verification_sent": False,
+            "avatar_url": None
+        }
 
-        # File fields come from request.FILES
-        # Note: Use square brackets or .get(), NOT parentheses ()
-        avatar = request.FILES.get('avatar')
+        # ---------- USERNAME UPDATE ----------
+        new_username = request.data.get("username")
+        if new_username and new_username != user.username:
+            if User.objects.filter(username=new_username).exists():
+                return Response({"error": "Username already taken"}, status=400)
 
-        if 'bio' in request.data:
-            profile.bio = request.data.get('bio')
+            user.username = new_username
+            user.save()
+
+        # ---------- EMAIL UPDATE ----------
+        new_email = request.data.get("email")
+        password = request.data.get("password")
+
+        if new_email and new_email != user.email:
+            if not password or not user.check_password(password):
+                return Response(
+                    {"error": "Password required to change email address"},
+                    status=400
+                )
+
+            token = default_token_generator.make_token(user)
+            uid = urlsafe_base64_encode(force_bytes(user.pk))
+
+            link = f"https://creektube-production.up.railway.app/api/verify-email/{uid}/{token}/?new_email={new_email}"
+
+            try:
+                send_mail(
+                    subject="Verify Your New Email - CreekTube",
+                    message=f"Click the link below to verify your new email:\n\n{link}",
+                    from_email=None,
+                    recipient_list=[new_email],
+                    fail_silently=False
+                )
+
+                response_data["email_verification_sent"] = True
+
+            except Exception as e:
+                return Response(
+                    {"error": f"Failed to send verification email: {str(e)}"},
+                    status=500
+                )
+
+        # ---------- PROFILE UPDATE ----------
+        bio = request.data.get("bio")
+        avatar = request.FILES.get("avatar")
+
+        if bio is not None:
+            profile.bio = bio
 
         if avatar:
             profile.avatar = avatar
 
         profile.save()
 
-        # --- Handle User Fields (Username & Email) ---
-        response_data = {
-            "success": "Profile updated successfully",
-            "email_verification_sent": False,
-            "avatar_url": profile.avatar.url if profile.avatar else None
-        }
-
-        # 2. Username Change
-        new_username = request.data.get("username")
-        if new_username and new_username != user.username:
-            if User.objects.filter(username=new_username).exists():
-                return Response({"error": "Username already taken"}, status=400)
-            user.username = new_username
-            user.save()
-
-        # 3. Email Change (Requires Verification)
-        new_email = request.data.get("email")
-        password = request.data.get("password")
-
-        if new_email and new_email != user.email:
-            # Security: Must provide password to change email
-            if not password or not user.check_password(password):
-                return Response({"error": "Password required to change email address"}, status=400)
-
-            # Generate Verification Link
-            token = default_token_generator.make_token(user)
-            uid = urlsafe_base64_encode(force_bytes(user.pk))
-
-            # This link points to your VerifyEmailView path
-            link = f"https://creektube-production.up.railway.app/api/verify-email/{uid}/{token}/?new_email={new_email}"
-
-            try:
-                send_mail(
-                    subject="Verify Your New Email - CreekTube",
-                    message=f"Please click the link below to verify your new email address:\n\n{link}",
-                    from_email=None,
-                    recipient_list=[new_email],
-                    fail_silently=False
-                )
-                response_data["email_verification_sent"] = True
-            except Exception as e:
-                return Response({"error": f"Failed to send verification email: {str(e)}"}, status=500)
+        if profile.avatar:
+            response_data["avatar_url"] = profile.avatar.url
 
         return Response(response_data, status=200)
 
