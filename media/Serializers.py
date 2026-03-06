@@ -43,6 +43,17 @@ class VideoSerializer(serializers.ModelSerializer):
             "author", "author_avatar", "comments"
         ]
 
+    def get_author_avatar(self, obj):
+        try:
+            profile, _ = Profile.objects.get_or_create(user=obj.author)
+            if profile and profile.avatar:
+                url = profile.avatar.url
+                if url.startswith("http"):
+                    return url
+                return f"https://res.cloudinary.com/{os.environ.get('CLOUDINARY_CLOUD_NAME')}/{url.lstrip('/')}"
+        except Exception:
+            return None
+
     def get_video(self, obj):
         if not obj.video:
             return None
@@ -58,15 +69,3 @@ class VideoSerializer(serializers.ModelSerializer):
         if url.startswith("http"):
             return url
         return f"https://res.cloudinary.com/{os.environ.get('CLOUDINARY_CLOUD_NAME')}/{url.lstrip('/')}"
-
-    def get_author_avatar(self, obj):
-        try:
-            profile = getattr(obj.author, "profile", None)
-            if profile and profile.avatar:
-                url = profile.avatar.url
-                if url.startswith("http"):
-                    return url
-                return f"https://res.cloudinary.com/{os.environ.get('CLOUDINARY_CLOUD_NAME')}/{url.lstrip('/')}"
-        except Exception:
-            pass
-        return None
