@@ -6,6 +6,7 @@ from django.utils.http import urlsafe_base64_encode
 from rest_framework import status
 from rest_framework.status import HTTP_400_BAD_REQUEST, HTTP_205_RESET_CONTENT, HTTP_200_OK
 from rest_framework.views import APIView, Response
+from rest_framework.parsers import MultiPartParser, FormParser
 from django.contrib.auth.models import User
 from rest_framework.permissions import IsAuthenticated, AllowAny
 from rest_framework_simplejwt.tokens import RefreshToken, AccessToken
@@ -174,13 +175,15 @@ class UpdateProfileView(APIView):
         # 2. Handle Profile Info (Bio, Avatar)
         profile, created = Profile.objects.get_or_create(user=user)
 
-        if 'bio' in data:
-            profile.bio = data.get('bio')
+        if 'bio' in request.data:
+            profile.bio = request.data['bio']
+            profile.save()
 
+        # Check if 'avatar' is in the file data
         if 'avatar' in request.FILES:
             profile.avatar = request.FILES['avatar']
+            profile.save()
 
-        profile.save()
 
         # 3. Handle Username change (Optional)
         new_username = data.get("username")
