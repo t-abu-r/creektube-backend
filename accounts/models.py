@@ -9,7 +9,7 @@ class PlanChoices(models.TextChoices):
 class Profile(models.Model):
     user = models.OneToOneField(User, on_delete=models.CASCADE)
     avatar = models.ImageField(upload_to="avatars/", blank=True, null=True)
-    bio = models.TextField(default='Hello!', max_length=80)
+    bio = models.TextField(blank=True, null=True)
     plan = models.CharField(
         max_length=10,
         choices=PlanChoices.choices,

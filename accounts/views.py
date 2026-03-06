@@ -159,9 +159,8 @@ class UpdateProfileView(APIView):
         # Note: Use square brackets or .get(), NOT parentheses ()
         avatar = request.FILES.get('avatar')
 
-        # 3. Update only if data was actually sent
-        if bio:
-            profile.bio = bio
+        if 'bio' in request.data:
+            profile.bio = request.data.get('bio')
 
         if avatar:
             profile.avatar = avatar
