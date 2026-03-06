@@ -148,15 +148,17 @@ class UpdateProfileView(APIView):
 
     def put(self, request):
         user = request.user
+        bio = request.data.get('bio')
+        avatar = request.data.FILES('avatar')
 
         profile = Profile.objects.get(user=user)
 
         # --- Handle Profile Fields (Bio & Avatar) ---
-        if 'bio' in request.data:
-            profile.bio = request.data.get('bio')
+        if bio:
+            profile.bio = bio
 
-        if 'avatar' in request.FILES:
-            profile.avatar = request.FILES['avatar']
+        if avatar:
+            profile.avatar = avatar
 
         profile.save()
 
