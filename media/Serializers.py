@@ -63,13 +63,14 @@ class VideoSerializer(serializers.ModelSerializer):
 
     def get_author_avatar(self, obj):
         try:
+            # Make sure to fetch from Profile (not MediaProfile)
             profile = getattr(obj.author, "profile", None)
             if profile and profile.avatar:
                 url = profile.avatar.url
-                # If already a Cloudinary URL, return as-is
+                # Already a full URL
                 if url.startswith("http") and "res.cloudinary.com" in url:
                     return url
-                # Otherwise, prepend Cloudinary URL
+                # Construct Cloudinary URL if relative
                 return f"https://res.cloudinary.com/{os.environ.get('CLOUDINARY_CLOUD_NAME')}/{url.lstrip('/')}"
         except Exception:
             pass
