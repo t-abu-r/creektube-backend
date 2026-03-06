@@ -21,32 +21,29 @@ from urllib.parse import unquote
 from media.models import MediaProfile
 
 class VerifyEmailView(APIView):
-    permission_classes = [AllowAny]
-
-    def get(self, request, *args, **kwargs):
-        uidb64 = request.query_params.get("uid")
-        token = request.query_params.get("token")
-
-        if not uidb64 or not token:
-            return Response({"error": "Missing parameters"}, status=400)
-
+    def get(self, request, uidb64, token):
         try:
-            padding = 4 - len(uidb64) % 4
-            uidb64_padded = uidb64 + ("=" * (padding % 4))
-            uid = force_str(urlsafe_base64_decode(uidb64_padded))
+            # 1. Decode the user ID
+            uid = force_str(urlsafe_base64_decode(uidb64))
             user = User.objects.get(pk=uid)
-        except (TypeError, ValueError, OverflowError, User.DoesNotExist):
-            return Response({"error": "Invalid link"}, status=400)
 
-        if account_activation_token.check_token(user, token):
-            user.is_active = True
-            user.save()
-            profile, _ = Profile.objects.get_or_create(user=user)
-            profile.is_verified = True
-            profile.save()
-            return Response({"message": "Email verified successfully!"})
-        else:
+            # 2. Extract the new email from the URL query params
+            new_email = request.query_params.get('new_email')
+
+            # 3. Check if the token is valid for this user
+            if user is not None and default_token_generator.check_token(user, token):
+                if not new_email:
+                    return Response({"error": "Missing new email address"}, status=400)
+
+                # 4. Success! Update the email
+                user.email = new_email
+                user.save()
+                return Response({"success": "Email updated successfully!"}, status=200)
+
             return Response({"error": "Invalid or expired token"}, status=400)
+
+        except (TypeError, ValueError, OverflowError, User.DoesNotExist):
+            return Response({"error": "Invalid verification link"}, status=400)
 
 class JWTRegisterView(APIView):
     permission_classes = [AllowAny]
