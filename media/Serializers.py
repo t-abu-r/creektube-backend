@@ -1,7 +1,7 @@
 from rest_framework import serializers
 from accounts.models import Profile
 import os
-from .models import Video, Comment, CategoryVideo
+from .models import Video, MediaProfile, Comment, CategoryVideo
 
 class CategoryVideoSerializer(serializers.ModelSerializer):
     class Meta:
@@ -10,57 +10,48 @@ class CategoryVideoSerializer(serializers.ModelSerializer):
 
 class CommentSerializer(serializers.ModelSerializer):
     author = serializers.CharField(source="author.username", read_only=True)
-    author_avatar = serializers.SerializerMethodField()
+    author_avatar = serializers.SerializerMethodField()  # method must be `get_author_avatar`
 
     class Meta:
         model = Comment
-        fields = ["id", "author", "author_avatar", "text", "timestamp"]
+        fields = ["id", "author", "author_avatar", "text", "timestamp"]  # use your actual model field name
 
+    # This method name MUST match the SerializerMethodField name
     def get_author_avatar(self, obj):
+        request = self.context.get("request")
         try:
             profile = Profile.objects.get(user=obj.author)
             if profile.avatar:
-                url = profile.avatar.url
-                if url.startswith("http"):
-                    return url
-                return f"https://res.cloudinary.com/{os.environ.get('CLOUDINARY_CLOUD_NAME')}/{url.lstrip('/')}"
+                if request:
+                    return request.build_absolute_uri(profile.avatar.url)
+                return profile.avatar.url
+            return None
         except Profile.DoesNotExist:
             return None
 
+
 class VideoSerializer(serializers.ModelSerializer):
     author = serializers.CharField(source="author.username", read_only=True)
-    author_avatar = serializers.SerializerMethodField()
+    avatar = serializers.SerializerMethodField()
     thumbnail = serializers.SerializerMethodField()
+    # Change this from a standard field to a MethodField
     video = serializers.SerializerMethodField()
     comments = CommentSerializer(many=True, read_only=True)
     category = serializers.SlugRelatedField(slug_field="slug", read_only=True)
 
     class Meta:
         model = Video
-        fields = [
-            "id", "category", "title", "description",
-            "thumbnail", "video", "timestamp", "is_approved",
-            "author", "author_avatar", "comments"
-        ]
+        fields = ["id", "category", "title", "description", "thumbnail", "video", "timestamp", "is_approved", "author", "author_avatar", "comments"]
 
-    def get_author_avatar(self, obj):
-        profile = getattr(obj.author, "profile", None)
-        if profile and profile.avatar:
-            url = profile.avatar.url
-            if url.startswith("http"):
-                return url
-            cloud_name = os.environ.get("CLOUDINARY_CLOUD_NAME")
-            if cloud_name:
-                return f"https://res.cloudinary.com/{cloud_name}/{url.lstrip('/')}"
-        return None
-
+    # --- THE FIX ---
     def get_video(self, obj):
         if not obj.video:
             return None
         url = obj.video.url
         if url.startswith("http"):
             return url
-        return f"https://res.cloudinary.com/{os.environ.get('CLOUDINARY_CLOUD_NAME')}/{url.lstrip('/')}"
+        # Construct the full Cloudinary URL
+        return f"https://res.cloudinary.com/{os.environ.get('CLOUDINARY_CLOUD_NAME')}/{url}"
 
     def get_thumbnail(self, obj):
         if not obj.thumbnail:
@@ -68,4 +59,19 @@ class VideoSerializer(serializers.ModelSerializer):
         url = obj.thumbnail.url
         if url.startswith("http"):
             return url
-        return f"https://res.cloudinary.com/{os.environ.get('CLOUDINARY_CLOUD_NAME')}/{url.lstrip('/')}"
+        return f"https://res.cloudinary.com/{os.environ.get('CLOUDINARY_CLOUD_NAME')}/{url}"
+
+    def get_author_avatar(self, obj):
+        try:
+            # Make sure to fetch from Profile (not MediaProfile)
+            profile = getattr(obj.author, "profile", None)
+            if profile and profile.avatar:
+                url = profile.avatar.url
+                # Already a full URL
+                if url.startswith("http") and "res.cloudinary.com" in url:
+                    return url
+                # Construct Cloudinary URL if relative
+                return f"https://res.cloudinary.com/{os.environ.get('CLOUDINARY_CLOUD_NAME')}/{url.lstrip('/')}"
+        except Exception:
+            pass
+        return None
