@@ -144,6 +144,7 @@ class JWTLogoutView(APIView):
 
 class UpdateProfileView(APIView):
     permission_classes = [IsAuthenticated]
+    parser_classes = (MultiPartParser, FormParser)
 
     def patch(self, request):
         user = request.user
@@ -177,12 +178,12 @@ class UpdateProfileView(APIView):
 
         if 'bio' in request.data:
             profile.bio = request.data['bio']
-            profile.save()
 
         # Check if 'avatar' is in the file data
         if 'avatar' in request.FILES:
             profile.avatar = request.FILES['avatar']
-            profile.save()
+
+        profile.save()
 
 
         # 3. Handle Username change (Optional)
