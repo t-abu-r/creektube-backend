@@ -44,15 +44,15 @@ class VideoSerializer(serializers.ModelSerializer):
         ]
 
     def get_author_avatar(self, obj):
-        try:
-            profile = getattr(obj.author, "profile", None)
-            if profile and profile.avatar:
-                url = profile.avatar.url
-                if url.startswith("http"):
-                    return url
-                return f"https://res.cloudinary.com/{os.environ.get('CLOUDINARY_CLOUD_NAME')}/{url.lstrip('/')}"
-        except Exception:
-            return None
+        profile = getattr(obj.author, "profile", None)
+        if profile and profile.avatar:
+            url = profile.avatar.url
+            if url.startswith("http"):
+                return url
+            cloud_name = os.environ.get("CLOUDINARY_CLOUD_NAME")
+            if cloud_name:
+                return f"https://res.cloudinary.com/{cloud_name}/{url.lstrip('/')}"
+        return None
 
     def get_video(self, obj):
         if not obj.video:
