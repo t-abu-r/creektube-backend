@@ -32,22 +32,35 @@ ALLOWED_HOSTS = []
 
 
 # Application definition
-
 INSTALLED_APPS = [
     'django.contrib.admin',
     'django.contrib.auth',
     'django.contrib.contenttypes',
     'django.contrib.sessions',
     'django.contrib.messages',
+    'cloudinary_storage',  # ← before staticfiles
+    'cloudinary',          # ← before staticfiles
     'django.contrib.staticfiles',
     'corsheaders',
     'rest_framework',
     'accounts',
     "media",
     "rest_framework_simplejwt.token_blacklist",
-    'cloudinary_storage',
-    'cloudinary',
 ]
+
+LOGGING = {
+    'version': 1,
+    'disable_existing_loggers': False,
+    'handlers': {
+        'console': {
+            'class': 'logging.StreamHandler',
+        },
+    },
+    'root': {
+        'handlers': ['console'],
+        'level': 'ERROR',
+    },
+}
 MIDDLEWARE = [
     'corsheaders.middleware.CorsMiddleware',
 #     "burst.middleware.RangeFileMiddleware",
