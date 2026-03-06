@@ -32,9 +32,8 @@ class CommentSerializer(serializers.ModelSerializer):
 
 class VideoSerializer(serializers.ModelSerializer):
     author = serializers.CharField(source="author.username", read_only=True)
-    avatar = serializers.SerializerMethodField()
+    author_avatar = serializers.SerializerMethodField()  # ← was "avatar"
     thumbnail = serializers.SerializerMethodField()
-    # Change this from a standard field to a MethodField
     video = serializers.SerializerMethodField()
     comments = CommentSerializer(many=True, read_only=True)
     category = serializers.SlugRelatedField(slug_field="slug", read_only=True)
@@ -43,14 +42,12 @@ class VideoSerializer(serializers.ModelSerializer):
         model = Video
         fields = ["id", "category", "title", "description", "thumbnail", "video", "timestamp", "is_approved", "author", "author_avatar", "comments"]
 
-    # --- THE FIX ---
     def get_video(self, obj):
         if not obj.video:
             return None
         url = obj.video.url
         if url.startswith("http"):
             return url
-        # Construct the full Cloudinary URL
         return f"https://res.cloudinary.com/{os.environ.get('CLOUDINARY_CLOUD_NAME')}/{url}"
 
     def get_thumbnail(self, obj):
@@ -63,14 +60,11 @@ class VideoSerializer(serializers.ModelSerializer):
 
     def get_author_avatar(self, obj):
         try:
-            # Make sure to fetch from Profile (not MediaProfile)
             profile = getattr(obj.author, "profile", None)
             if profile and profile.avatar:
                 url = profile.avatar.url
-                # Already a full URL
-                if url.startswith("http") and "res.cloudinary.com" in url:
+                if url.startswith("http"):
                     return url
-                # Construct Cloudinary URL if relative
                 return f"https://res.cloudinary.com/{os.environ.get('CLOUDINARY_CLOUD_NAME')}/{url.lstrip('/')}"
         except Exception:
             pass
