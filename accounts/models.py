@@ -9,7 +9,7 @@ class PlanChoices(models.TextChoices):
 
 class Profile(models.Model):
     user = models.OneToOneField(User, on_delete=models.CASCADE)
-    avatar = CloudinaryField(resource_type="image")
+    avatar = CloudinaryField('image', blank=True, null=True)
 
 
     bio = models.TextField(blank=True, null=True)
