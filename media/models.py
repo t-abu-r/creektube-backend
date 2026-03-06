@@ -29,13 +29,12 @@ class MediaProfile(models.Model):
 # -----------------------------
 class Video(models.Model):
     author = models.ForeignKey(User, on_delete=models.CASCADE)
-    # Only the new FK, no old category
     category = models.ForeignKey(
         CategoryVideo,
         null=True,
         blank=True,
         on_delete=models.SET_NULL,
-        related_name="videos"
+        related_name="videos",
     )
     # TOD0 Add a "top 5 interests" feature
         # categories dict looks like {"nature": 12, "gaming": 8, "music": 5}

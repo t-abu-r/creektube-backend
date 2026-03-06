@@ -113,7 +113,6 @@ class JWTLoginView(APIView):
         profile, created = MediaProfile.objects.get_or_create(user=user)
         if created:
             profile.user = user
-            profile.categories = {"brainrot": 1}
             profile.moderator = False
             profile.save()
 
@@ -147,10 +146,10 @@ class UpdateProfileView(APIView):
     # Required to handle FormData (Bio text + Avatar file)
     parser_classes = (MultiPartParser, FormParser)
 
-    def patch(self, request):
+    def put(self, request):
         user = request.user
-        # 1. Access the Profile linked to the user
-        profile, created = Profile.objects.get_or_create(user=user)
+
+        profile = Profile.objects.get(user=user)
 
         # --- Handle Profile Fields (Bio & Avatar) ---
         if 'bio' in request.data:
