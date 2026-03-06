@@ -144,60 +144,67 @@ class JWTLogoutView(APIView):
 
 class UpdateProfileView(APIView):
     permission_classes = [IsAuthenticated]
+    # Required to handle FormData (Bio text + Avatar file)
     parser_classes = (MultiPartParser, FormParser)
 
     def patch(self, request):
         user = request.user
-        data = request.data
-
-        # 1. Handle Sensitive Email Change
-        new_email = data.get("email")
-        password = data.get("password")
-
-        if new_email and new_email != user.email:
-            if not password or not user.check_password(password):
-                return Response({"error": "Password required to change email"}, status=400)
-
-            # Email Verification Logic
-            token = default_token_generator.make_token(user)
-            uid = urlsafe_base64_encode(force_bytes(user.pk))
-            # Note: Storing the pending email in session or a temporary field is best,
-            # but for now, we'll send the link.
-            link = f"https://creektube-production.up.railway.app/verify-email/{uid}/{token}/?new_email={new_email}"
-
-            send_mail(
-                "Verify Your New Email",
-                f"Click here to verify: {link}",
-                None,
-                [new_email],
-            )
-            # We don't change user.email yet! Only after verification.
-
-        # 2. Handle Profile Info (Bio, Avatar)
+        # 1. Access the Profile linked to the user
         profile, created = Profile.objects.get_or_create(user=user)
 
+        # --- Handle Profile Fields (Bio & Avatar) ---
         if 'bio' in request.data:
-            profile.bio = request.data['bio']
+            profile.bio = request.data.get('bio')
 
-        # Check if 'avatar' is in the file data
         if 'avatar' in request.FILES:
             profile.avatar = request.FILES['avatar']
 
         profile.save()
 
+        # --- Handle User Fields (Username & Email) ---
+        response_data = {
+            "success": "Profile updated successfully",
+            "email_verification_sent": False,
+            "avatar_url": profile.avatar.url if profile.avatar else None
+        }
 
-        # 3. Handle Username change (Optional)
-        new_username = data.get("username")
+        # 2. Username Change
+        new_username = request.data.get("username")
         if new_username and new_username != user.username:
             if User.objects.filter(username=new_username).exists():
                 return Response({"error": "Username already taken"}, status=400)
             user.username = new_username
             user.save()
 
-        return Response({
-            "success": "Profile updated successfully",
-            "email_verification_sent": bool(new_email and new_email != user.email)
-        }, status=200)
+        # 3. Email Change (Requires Verification)
+        new_email = request.data.get("email")
+        password = request.data.get("password")
+
+        if new_email and new_email != user.email:
+            # Security: Must provide password to change email
+            if not password or not user.check_password(password):
+                return Response({"error": "Password required to change email address"}, status=400)
+
+            # Generate Verification Link
+            token = default_token_generator.make_token(user)
+            uid = urlsafe_base64_encode(force_bytes(user.pk))
+
+            # This link points to your VerifyEmailView path
+            link = f"https://creektube-production.up.railway.app/api/verify-email/{uid}/{token}/?new_email={new_email}"
+
+            try:
+                send_mail(
+                    subject="Verify Your New Email - CreekTube",
+                    message=f"Please click the link below to verify your new email address:\n\n{link}",
+                    from_email=None,
+                    recipient_list=[new_email],
+                    fail_silently=False
+                )
+                response_data["email_verification_sent"] = True
+            except Exception as e:
+                return Response({"error": f"Failed to send verification email: {str(e)}"}, status=500)
+
+        return Response(response_data, status=200)
 
 class JWTResetPasswordView(APIView):
     def post(self, request, *args, **kwargs):
