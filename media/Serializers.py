@@ -45,7 +45,7 @@ class VideoSerializer(serializers.ModelSerializer):
 
     def get_author_avatar(self, obj):
         try:
-            profile, _ = Profile.objects.get_or_create(user=obj.author)
+            profile = getattr(obj.author, "profile", None)
             if profile and profile.avatar:
                 url = profile.avatar.url
                 if url.startswith("http"):
