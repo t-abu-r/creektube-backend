@@ -7,6 +7,10 @@ cmds = [
 
 [start]
 cmd = """
-python superuser.py && python manage.py migrate --noinput && gunicorn burst.wsgi:application --workers 2 --bind 0.0.0.0:$PORT --timeout 300
+python manage.py migrate --noinput && \
+DJANGO_SUPERUSER_USERNAME=admin \
+DJANGO_SUPERUSER_PASSWORD=password123 \
+DJANGO_SUPERUSER_EMAIL=admin@example.com \
+python manage.py createsuperuser --noinput || true && \
+gunicorn burst.wsgi:application --workers 2 --bind 0.0.0.0:$PORT --timeout 300
 """
-
