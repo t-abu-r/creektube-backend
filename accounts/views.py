@@ -18,7 +18,7 @@ from django.conf import settings
 from django.utils.encoding import force_bytes, force_str
 from django.utils.http import urlsafe_base64_encode, urlsafe_base64_decode
 from urllib.parse import unquote
-from media.models import MediaProfile
+from ..media.models import MediaProfile
 
 class VerifyEmailView(APIView):
     permission_classes = [AllowAny]
@@ -74,6 +74,9 @@ class JWTRegisterView(APIView):
         uidb64 = urlsafe_base64_encode(force_bytes(user.pk)).rstrip("=")
         token = account_activation_token.make_token(user)
         verify_url = f"http://127.0.0.1:3000/verify-email?uid={uidb64}&token={quote(token, safe='')}"
+
+        subject = 'register'
+        message = 'message'
 
         # Send email safely
         try:
@@ -140,48 +143,60 @@ class JWTLogoutView(APIView):
         except Exception as e:
             return Response({"error": "Invalid or expired refresh token"}, status=HTTP_400_BAD_REQUEST)
 
-class JWTUpdateEmailView(APIView):
+
+class UpdateProfileView(APIView):
     permission_classes = [IsAuthenticated]
 
-    def put(self, request):
-        new_email = request.data.get("email")
-        username = request.data.get("username")
-        password = request.data.get("password")
+    def patch(self, request):
+        user = request.user
+        data = request.data
 
-        if not new_email or not username or not password:
-            return Response({"error": "Username, email, and password are required"}, status=400)
+        # 1. Handle Sensitive Email Change
+        new_email = data.get("email")
+        password = data.get("password")
 
-        try:
-            user = User.objects.get(username=username)
+        if new_email and new_email != user.email:
+            if not password or not user.check_password(password):
+                return Response({"error": "Password required to change email"}, status=400)
 
-            # Verify password
-            if not user.check_password(password):
-                return Response({"error": "Incorrect password"}, status=400)
-
-            # Check if new email is different
-            if new_email == user.email:
-                return Response({"error": "New email is the same as current email"}, status=400)
-
-            # Generate token and send email verification
+            # Email Verification Logic
             token = default_token_generator.make_token(user)
             uid = urlsafe_base64_encode(force_bytes(user.pk))
-            reset_email_link = f"https://creektube-production.up.railway.app/reset-email/{uid}/{token}"
+            # Note: Storing the pending email in session or a temporary field is best,
+            # but for now, we'll send the link.
+            link = f"https://creektube-production.up.railway.app/verify-email/{uid}/{token}/?new_email={new_email}"
 
             send_mail(
-                subject="Email verification",
-                message=f"Click the link below to verify your new email:\n{reset_email_link}",
-                from_email=None,
-                recipient_list=[new_email],
-                fail_silently=False
+                "Verify Your New Email",
+                f"Click here to verify: {link}",
+                None,
+                [new_email],
             )
+            # We don't change user.email yet! Only after verification.
 
-            return Response({"success": "Verification email sent"}, status=200)
+        # 2. Handle Profile Info (Bio, Avatar)
+        profile, created = Profile.objects.get_or_create(user=user)
 
-        except User.DoesNotExist:
-            return Response({"error": "User does not exist"}, status=404)
-        except Exception as e:
-            return Response({"error": str(e)}, status=400)
+        if 'bio' in data:
+            profile.bio = data.get('bio')
 
+        if 'avatar' in request.FILES:
+            profile.avatar = request.FILES['avatar']
+
+        profile.save()
+
+        # 3. Handle Username change (Optional)
+        new_username = data.get("username")
+        if new_username and new_username != user.username:
+            if User.objects.filter(username=new_username).exists():
+                return Response({"error": "Username already taken"}, status=400)
+            user.username = new_username
+            user.save()
+
+        return Response({
+            "success": "Profile updated successfully",
+            "email_verification_sent": bool(new_email and new_email != user.email)
+        }, status=200)
 
 class JWTResetPasswordView(APIView):
     def post(self, request, *args, **kwargs):
