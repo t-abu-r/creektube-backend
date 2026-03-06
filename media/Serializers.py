@@ -66,15 +66,11 @@ class VideoSerializer(serializers.ModelSerializer):
             profile = getattr(obj.author, "profile", None)
             if profile and profile.avatar:
                 url = profile.avatar.url
-                # If it's already an absolute URL, return as-is
-                if url.startswith("http"):
+                # If already a Cloudinary URL, return as-is
+                if url.startswith("http") and "res.cloudinary.com" in url:
                     return url
-                # If request exists, build absolute URI
-                request = self.context.get("request")
-                if request:
-                    return request.build_absolute_uri(url)
-                # Last resort: prepend Cloudinary URL
-                return f"https://res.cloudinary.com/{os.environ.get('CLOUDINARY_CLOUD_NAME')}/{url}"
+                # Otherwise, prepend Cloudinary URL
+                return f"https://res.cloudinary.com/{os.environ.get('CLOUDINARY_CLOUD_NAME')}/{url.lstrip('/')}"
         except Exception:
             pass
         return None
