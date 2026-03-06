@@ -10,7 +10,6 @@ from .models import Video, Comment, CategoryVideo, MediaProfile as Profile, Medi
 from django.db.models import Case, When, Q, IntegerField, Count
 from django.views.decorators.csrf import csrf_exempt
 import os
-import subprocess
 from django.conf import settings
 from django.utils.decorators import method_decorator
 
@@ -268,7 +267,6 @@ class UploadVideo(APIView):
             slug=category
         )
 
-        # Save original first
         video_instance = Video.objects.create(
             video=video_file,
             author=author,
@@ -279,26 +277,6 @@ class UploadVideo(APIView):
             timestamp=timezone.now(),
             is_approved=False
         )
-
-        original_path = video_instance.video.path
-        mp4_path = original_path.rsplit('.', 1)[0] + ".mp4"
-
-        # Convert using FFmpeg
-        subprocess.run([
-            "ffmpeg",
-            "-i", original_path,
-            "-c:v", "libx264",
-            "-c:a", "aac",
-            "-movflags", "+faststart",
-            mp4_path
-        ])
-
-        # Replace file field with converted file
-        video_instance.video.name = video_instance.video.name.rsplit('.', 1)[0] + ".mp4"
-        video_instance.save()
-
-        # Optional: delete original
-        os.remove(original_path)
 
         serializer = VideoSerializer(video_instance, context={'request': request})
         return Response(serializer.data, status=201)
