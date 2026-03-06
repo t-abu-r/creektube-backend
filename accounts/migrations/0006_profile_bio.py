@@ -10,9 +10,8 @@ class Migration(migrations.Migration):
     ]
 
     operations = [
-        migrations.AddField(
-            model_name='profile',
-            name='bio',
-            field=models.TextField(blank=True, null=True),
+        migrations.RunSQL(
+            "ALTER TABLE accounts_profile ADD COLUMN IF NOT EXISTS bio text NULL;",
+            reverse_sql="ALTER TABLE accounts_profile DROP COLUMN IF EXISTS bio;",
         ),
     ]
