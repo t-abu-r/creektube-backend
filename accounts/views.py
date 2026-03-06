@@ -148,12 +148,18 @@ class UpdateProfileView(APIView):
 
     def put(self, request):
         user = request.user
+        # 1. Get the profile safely
+        profile, created = Profile.objects.get_or_create(user=user)
+
+        # 2. Extract data correctly
+        # Text fields come from request.data
         bio = request.data.get('bio')
-        avatar = request.data.FILES('avatar')
 
-        profile = Profile.objects.get(user=user)
+        # File fields come from request.FILES
+        # Note: Use square brackets or .get(), NOT parentheses ()
+        avatar = request.FILES.get('avatar')
 
-        # --- Handle Profile Fields (Bio & Avatar) ---
+        # 3. Update only if data was actually sent
         if bio:
             profile.bio = bio
 
