@@ -7,7 +7,7 @@ from rest_framework.views import APIView
 from django.utils import timezone
 from .permissions import IsModerator
 from .Serializers import VideoSerializer, MediaProfileSerializer
-from ..accounts.serializers import ProfileSerializer
+from accounts.serializers import ProfileSerializer
 from .models import Video, Comment, CategoryVideo, MediaProfile as Profile, MediaProfile
 from django.db.models import Case, When, Q, IntegerField, Count
 from django.views.decorators.csrf import csrf_exempt
