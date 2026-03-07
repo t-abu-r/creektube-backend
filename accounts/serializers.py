@@ -11,6 +11,12 @@ class ProfileSerializer(serializers.ModelSerializer):
 
     def get_avatar_url(self, obj):
         request = self.context.get("request")
-        if obj.avatar:
-            return request.build_absolute_uri(obj.avatar.url)
-        return None
+        avatar = getattr(obj, 'avatar', None)
+        if not avatar:
+            return None
+        url = avatar.url
+        if url.startswith("http"):
+            return url
+        if request:
+            return request.build_absolute_uri(url)
+        return url

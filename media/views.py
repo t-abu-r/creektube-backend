@@ -304,7 +304,7 @@ class Account(APIView):
 
         try:
             user_profile = Profile.objects.get(user=profile_media.user)
-            profile_data = ProfileSerializer(user_profile).data  # user_profile must be a Profile, not MediaProfile
+            profile_data = ProfileSerializer(user_profile, context={"request": request}).data
             avatar = profile_data.get("avatar_url")
         except Profile.DoesNotExist:
             avatar = None
