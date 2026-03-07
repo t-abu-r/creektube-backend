@@ -80,6 +80,7 @@ REST_FRAMEWORK = {
         "rest_framework_simplejwt.authentication.JWTAuthentication",
     ),
 }
+# updated CORS - force redeploy
 CORS_ALLOWED_ORIGINS = [
     "https://creektube-frontend.vercel.app",
     "https://creektube-production.up.railway.app",
