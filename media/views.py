@@ -304,8 +304,10 @@ class Account(APIView):
 
         try:
             user_profile = Profile.objects.get(user=profile_media.user)
-            profile_data = ProfileSerializer(user_profile, context={"request": request}).data
-            avatar = profile_data.get("avatar_url")
+            avatar = None
+            if user_profile.avatar:
+                url = user_profile.avatar.url
+                avatar = url if url.startswith("http") else f"https://creektube-production.up.railway.app{url}"
         except Profile.DoesNotExist:
             avatar = None
 
