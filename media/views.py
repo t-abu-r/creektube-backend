@@ -248,9 +248,11 @@ class UploadCommentVideo(APIView):
 # ---------------------------
 # Upload Video API
 # ---------------------------
+from rest_framework.parsers import MultiPartParser, FormParser
 
 class UploadVideo(APIView):
     permission_classes = [IsAuthenticated]
+    parser_classes = [MultiPartParser, FormParser]  # ← add this
 
     def post(self, request):
         author = request.user

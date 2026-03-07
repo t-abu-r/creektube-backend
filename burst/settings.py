@@ -217,3 +217,6 @@ cloudinary.config(
 #     DEFAULT_FILE_STORAGE = 'cloudinary_storage.storage.MediaCloudinaryStorage'
 
 DEFAULT_FILE_STORAGE = 'cloudinary_storage.storage.MediaCloudinaryStorage'
+
+DATA_UPLOAD_MAX_MEMORY_SIZE = 524288000  # 500MB
+FILE_UPLOAD_MAX_MEMORY_SIZE = 524288000  # 500MB
