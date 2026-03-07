@@ -20,6 +20,7 @@ from django.utils.encoding import force_bytes, force_str
 from django.utils.http import urlsafe_base64_encode, urlsafe_base64_decode
 from urllib.parse import unquote
 from media.models import MediaProfile
+from cloudinary.utils import cloudinary_url
 
 class VerifyEmailView(APIView):
     def get(self, request, uidb64, token):
@@ -251,6 +252,13 @@ class CheckUserInfo(APIView):
     permission_classes = [IsAuthenticated]
     def get(self, request):
         user_profile = Profile.objects.get(user=request.user)
-        username = request.user.username
 
-        return Response({"username": username, "plan": user_profile.get_plan_display()})
+        avatar = None
+        if user_profile.avatar:
+            avatar = user_profile.avatar.url  # Cloudinary builds full URL automatically
+
+        return Response({
+            "username": request.user.username,
+            "plan": user_profile.get_plan_display(),
+            "avatar": avatar
+        })
