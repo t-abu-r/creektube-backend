@@ -3,6 +3,12 @@ from accounts.models import Profile
 import os
 from .models import Video, MediaProfile, Comment, CategoryVideo
 
+class MediaProfileSerializer(serializers.ModelSerializer):
+    username = serializers.CharField(source='user.username', read_only=True)
+    class Meta:
+        model = MediaProfile
+        fields = ["id", "username", "categories", "moderator"]
+
 class CategoryVideoSerializer(serializers.ModelSerializer):
     class Meta:
         model = CategoryVideo

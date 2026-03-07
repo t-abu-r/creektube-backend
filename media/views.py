@@ -1,3 +1,4 @@
+from django.core.serializers import serialize
 from django.shortcuts import get_object_or_404
 from rest_framework import status
 from rest_framework.permissions import AllowAny, IsAuthenticated, IsAdminUser
@@ -5,7 +6,7 @@ from rest_framework.response import Response
 from rest_framework.views import APIView
 from django.utils import timezone
 from .permissions import IsModerator
-from .Serializers import VideoSerializer
+from .Serializers import VideoSerializer, MediaProfileSerializer
 from .models import Video, Comment, CategoryVideo, MediaProfile as Profile, MediaProfile
 from django.db.models import Case, When, Q, IntegerField, Count
 from django.views.decorators.csrf import csrf_exempt
@@ -280,3 +281,18 @@ class UploadVideo(APIView):
 
         serializer = VideoSerializer(video_instance, context={'request': request})
         return Response(serializer.data, status=201)
+
+class Account(APIView):
+    permission_classes = [AllowAny]
+    def post(self, request):
+        id = request.data.get("id")
+
+        if not id:
+            return Response({"error": "ID is required"}, status=400)
+
+        try:
+            profile = MediaProfile.objects.get(id=id)
+        except MediaProfile.DoesNotExist:
+            return Response({"error": "Profile not found"}, status=404)
+
+        return Response(MediaProfileSerializer(profile).data)

@@ -9,6 +9,6 @@ cmds = [
 cmd = """
 python manage.py migrate --noinput && \
 python superuser.py && \
-gunicorn burst.wsgi:application --workers 2 --bind 0.0.0.0:$PORT --timeout 300
+gunicorn burst.wsgi:application --workers 2 --bind 0.0.0.0:$PORT --timeout 900
 """
 
