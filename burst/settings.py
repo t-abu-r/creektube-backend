@@ -81,7 +81,7 @@ REST_FRAMEWORK = {
     ),
 }
 CORS_ALLOWED_ORIGINS = [
-    "https://creektube-frontend.vercel.app/",
+    "https://creektube-frontend.vercel.app",
     "https://creektube-production.up.railway.app",
 ]
 
