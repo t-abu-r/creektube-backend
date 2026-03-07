@@ -47,7 +47,7 @@ class VideoSerializer(serializers.ModelSerializer):
 
     class Meta:
         model = Video
-        fields = ["id", "category", "title", "description", "thumbnail", "video", "timestamp", "is_approved", "author", "author_avatar", "comments"]
+        fields = ["id", "category", "title", "description", "thumbnail", "video", "timestamp", "is_approved", "author", "author_id", "author_avatar", "comments"]
 
     def get_author_id(self, obj):
         try:
