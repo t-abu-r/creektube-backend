@@ -300,7 +300,19 @@ class Account(APIView):
 
         videos = Video.objects.filter(author=profile.user, is_approved=True)
 
+        # Get avatar from accounts Profile
+        try:
+            user_profile = Profile.objects.get(user=profile.user)
+            avatar = user_profile.avatar.url if user_profile.avatar else None
+            if avatar and not avatar.startswith("http"):
+                avatar = f"https://res.cloudinary.com/{os.environ.get('CLOUDINARY_CLOUD_NAME')}/{avatar.lstrip('/')}"
+        except Profile.DoesNotExist:
+            avatar = None
+
+        account_data = MediaProfileSerializer(profile).data
+        account_data["avatar"] = avatar  # ← inject it in
+
         return Response({
-            "account": MediaProfileSerializer(profile).data,
+            "account": account_data,
             "videos": VideoSerializer(videos, many=True).data
         }, status=200)
