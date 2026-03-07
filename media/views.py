@@ -2,6 +2,7 @@ from django.core.serializers import serialize
 from django.shortcuts import get_object_or_404
 from rest_framework import status
 from rest_framework.permissions import AllowAny, IsAuthenticated, IsAdminUser
+from account.models import Profile
 from rest_framework.response import Response
 from rest_framework.views import APIView
 from django.utils import timezone
@@ -295,14 +296,14 @@ class Account(APIView):
             return Response({"error": "ID is required"}, status=400)
 
         try:
-            profile = MediaProfile.objects.get(id=id)
+            profile_media = MediaProfile.objects.get(id=id)
         except MediaProfile.DoesNotExist:
             return Response({"error": "Profile not found"}, status=404)
 
-        videos = Video.objects.filter(author=profile.user, is_approved=True)
+        videos = Video.objects.filter(author=profile_media.user, is_approved=True)
 
         try:
-            user_profile = Profile.objects.get(user=profile.user)
+            user_profile = Profile.objects.get(user=profile_media.user)
             profile_data = ProfileSerializer(user_profile).data
             avatar = profile_data.get("avatar_url")
         except Profile.DoesNotExist:
@@ -310,6 +311,6 @@ class Account(APIView):
 
         return Response({
             "avatar": avatar,
-            "account": MediaProfileSerializer(profile).data,
+            "account": MediaProfileSerializer(profile_media).data,
             "videos": VideoSerializer(videos, many=True).data
         }, status=200)
