@@ -43,10 +43,17 @@ class VideoSerializer(serializers.ModelSerializer):
     video = serializers.SerializerMethodField()
     comments = CommentSerializer(many=True, read_only=True)
     category = serializers.SlugRelatedField(slug_field="slug", read_only=True)
+    author_id = serializers.SerializerMethodField()  # ← add this
 
     class Meta:
         model = Video
         fields = ["id", "category", "title", "description", "thumbnail", "video", "timestamp", "is_approved", "author", "author_avatar", "comments"]
+
+    def get_author_id(self, obj):
+        try:
+            return MediaProfile.objects.get(user=obj.author).id
+        except MediaProfile.DoesNotExist:
+            return None
 
     def get_video(self, obj):
         if not obj.video:

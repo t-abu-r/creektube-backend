@@ -13,4 +13,5 @@ urlpatterns = [
     path("mod-panel/", ModPanel.as_view()),
     path("getmod/", IfModerator.as_view(), name="GetMod"),
     path("searchvideo/", SearchVideo.as_view(), name="SearchVideo"),
+    path("account/", Account.as_view(), name="GetAccount"),
 ]

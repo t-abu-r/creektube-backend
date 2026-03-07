@@ -286,6 +286,7 @@ class UploadVideo(APIView):
 
 class Account(APIView):
     permission_classes = [AllowAny]
+
     def post(self, request):
         id = request.data.get("id")
 
@@ -297,4 +298,9 @@ class Account(APIView):
         except MediaProfile.DoesNotExist:
             return Response({"error": "Profile not found"}, status=404)
 
-        return Response(MediaProfileSerializer(profile).data)
+        videos = Video.objects.filter(author=profile.user, is_approved=True)
+
+        return Response({
+            "account": MediaProfileSerializer(profile).data,
+            "videos": VideoSerializer(videos, many=True).data
+        }, status=200)
