@@ -7,6 +7,7 @@ from rest_framework.views import APIView
 from django.utils import timezone
 from .permissions import IsModerator
 from .Serializers import VideoSerializer, MediaProfileSerializer
+from ..accounts.serializers import ProfileSerializer
 from .models import Video, Comment, CategoryVideo, MediaProfile as Profile, MediaProfile
 from django.db.models import Case, When, Q, IntegerField, Count
 from django.views.decorators.csrf import csrf_exempt
@@ -300,19 +301,15 @@ class Account(APIView):
 
         videos = Video.objects.filter(author=profile.user, is_approved=True)
 
-        # Get avatar from accounts Profile
         try:
             user_profile = Profile.objects.get(user=profile.user)
-            avatar = user_profile.avatar.url if user_profile.avatar else None
-            if avatar and not avatar.startswith("http"):
-                avatar = f"https://res.cloudinary.com/{os.environ.get('CLOUDINARY_CLOUD_NAME')}/{avatar.lstrip('/')}"
+            profile_data = ProfileSerializer(user_profile).data
+            avatar = profile_data.get("avatar_url")
         except Profile.DoesNotExist:
             avatar = None
 
-        account_data = MediaProfileSerializer(profile).data
-        account_data["avatar"] = avatar  # ← inject it in
-
         return Response({
-            "account": account_data,
+            "avatar": avatar,
+            "account": MediaProfileSerializer(profile).data,
             "videos": VideoSerializer(videos, many=True).data
         }, status=200)
