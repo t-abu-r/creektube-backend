@@ -60,6 +60,8 @@ LOGGING = {
         'handlers': ['console'],
         'level': 'ERROR',
     },
+
+
 }
 MIDDLEWARE = [
     'corsheaders.middleware.CorsMiddleware',
