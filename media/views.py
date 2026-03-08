@@ -297,6 +297,7 @@ class Account(APIView):
 
         try:
             profile_media = MediaProfile.objects.get(id=id)
+            profile = Profile.objects.get(id=id)
         except MediaProfile.DoesNotExist:
             return Response({"error": "Profile not found"}, status=404)
 
@@ -311,7 +312,7 @@ class Account(APIView):
             pass
 
         return Response({
-            "avatar": avatar,
+            "profile": ProfileSerializer(profile).data,
             "account": MediaProfileSerializer(profile_media).data,
             "videos": VideoSerializer(videos, many=True).data
         }, status=200)
