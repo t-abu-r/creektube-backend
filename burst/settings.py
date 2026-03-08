@@ -184,6 +184,7 @@ DEFAULT_FROM_EMAIL = f"CreekTube <{EMAIL_HOST_USER}>"
 PASSWORD_RESET_TIMEOUT = 60 * 60 * 24
 
 STATIC_ROOT = os.path.join(BASE_DIR, 'staticfiles')
+STATICFILES_STORAGE = 'whitenoise.storage.CompressedStaticFilesStorage'
 ALLOWED_HOSTS = ['*']
 
 SECRET_KEY = os.environ.get('SECRET_KEY', 'your-default-secret-key')
