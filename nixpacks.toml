@@ -6,8 +6,8 @@ cmds = [
 
 [start]
 cmd = """
+mkdir -p staticfiles && \
+python manage.py collectstatic --noinput --clear && \
 python manage.py migrate --noinput && \
-python manage.py collectstatic --noinput && \
 gunicorn burst.wsgi:application --workers 2 --bind 0.0.0.0:$PORT --timeout 900
 """
-
