@@ -297,22 +297,19 @@ class Account(APIView):
 
         try:
             profile_media = MediaProfile.objects.get(id=id)
-            profile = Profile.objects.get(id=id)
         except MediaProfile.DoesNotExist:
             return Response({"error": "Profile not found"}, status=404)
 
         videos = Video.objects.filter(author=profile_media.user, is_approved=True)
 
-        avatar = None
         try:
             user_profile = Profile.objects.get(user=profile_media.user)
             profile_data = ProfileSerializer(user_profile, context={"request": request}).data
-            avatar = profile_data.get("avatar_url")
         except Profile.DoesNotExist:
-            pass
+            profile_data = {"avatar_url": None, "bio": None}
 
         return Response({
-            "profile": ProfileSerializer(profile).data,
+            "profile": profile_data,
             "account": MediaProfileSerializer(profile_media).data,
             "videos": VideoSerializer(videos, many=True).data
         }, status=200)

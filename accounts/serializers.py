@@ -7,7 +7,7 @@ class ProfileSerializer(serializers.ModelSerializer):
 
     class Meta:
         model = Profile
-        fields = ("id", "user", "plan", "avatar", "avatar_url")
+        fields = ("id", "user", "plan", "avatar", "avatar_url", "bio")
 
     def get_avatar_url(self, obj):
         request = self.context.get("request")
