@@ -208,6 +208,15 @@ cloudinary.config(
     secure=True
 )
 
+JAZZMIN_SETTINGS = {
+    "site_title": "CreekTube Admin",
+    "site_header": "CreekTube",
+    "site_brand": "CreekTube",
+    "welcome_sign": "Welcome to CreekTube Admin",
+    "copyright": "CreekTube",
+    "site_logo": "https://res.cloudinary.com/dxwoysec8/image/upload/v1772973894/mrf6ru11yqiup9kiidke.svg",  # or path to your logo
+}
+
 
 # if DEBUG:
 #     MEDIA_ROOT = os.path.join(BASE_DIR, 'media')
