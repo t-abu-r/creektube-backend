@@ -1,0 +1,99 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 400 400" width="400" height="400">
+  <defs>
+    <linearGradient id="bgGrad" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" style="stop-color:#0a0a0a"/>
+      <stop offset="100%" style="stop-color:#111827"/>
+    </linearGradient>
+    <linearGradient id="playGrad" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" style="stop-color:#3b82f6"/>
+      <stop offset="100%" style="stop-color:#06b6d4"/>
+    </linearGradient>
+    <linearGradient id="waveGrad" x1="0%" y1="0%" x2="100%" y2="0%">
+      <stop offset="0%" style="stop-color:#3b82f6;stop-opacity:0.8"/>
+      <stop offset="50%" style="stop-color:#06b6d4;stop-opacity:1"/>
+      <stop offset="100%" style="stop-color:#3b82f6;stop-opacity:0.8"/>
+    </linearGradient>
+    <filter id="glow">
+      <feGaussianBlur stdDeviation="4" result="coloredBlur"/>
+      <feMerge>
+        <feMergeNode in="coloredBlur"/>
+        <feMergeNode in="SourceGraphic"/>
+      </feMerge>
+    </filter>
+    <filter id="softglow">
+      <feGaussianBlur stdDeviation="8" result="coloredBlur"/>
+      <feMerge>
+        <feMergeNode in="coloredBlur"/>
+        <feMergeNode in="SourceGraphic"/>
+      </feMerge>
+    </filter>
+    <clipPath id="circleClip">
+      <circle cx="200" cy="200" r="190"/>
+    </clipPath>
+  </defs>
+
+  <!-- Background circle -->
+  <circle cx="200" cy="200" r="195" fill="url(#bgGrad)"/>
+  <circle cx="200" cy="200" r="195" fill="none" stroke="#1e3a5f" stroke-width="1.5"/>
+
+  <!-- Subtle grid lines -->
+  <g clip-path="url(#circleClip)" opacity="0.06">
+    <line x1="0" y1="100" x2="400" y2="100" stroke="#3b82f6" stroke-width="1"/>
+    <line x1="0" y1="150" x2="400" y2="150" stroke="#3b82f6" stroke-width="1"/>
+    <line x1="0" y1="200" x2="400" y2="200" stroke="#3b82f6" stroke-width="1"/>
+    <line x1="0" y1="250" x2="400" y2="250" stroke="#3b82f6" stroke-width="1"/>
+    <line x1="0" y1="300" x2="400" y2="300" stroke="#3b82f6" stroke-width="1"/>
+    <line x1="100" y1="0" x2="100" y2="400" stroke="#3b82f6" stroke-width="1"/>
+    <line x1="150" y1="0" x2="150" y2="400" stroke="#3b82f6" stroke-width="1"/>
+    <line x1="200" y1="0" x2="200" y2="400" stroke="#3b82f6" stroke-width="1"/>
+    <line x1="250" y1="0" x2="250" y2="400" stroke="#3b82f6" stroke-width="1"/>
+    <line x1="300" y1="0" x2="300" y2="400" stroke="#3b82f6" stroke-width="1"/>
+  </g>
+
+  <!-- Creek waves (bottom) -->
+  <g clip-path="url(#circleClip)" filter="url(#glow)">
+    <path d="M 10 290 Q 60 275 110 290 Q 160 305 210 290 Q 260 275 310 290 Q 360 305 390 290" 
+          fill="none" stroke="url(#waveGrad)" stroke-width="2.5" opacity="0.5"/>
+    <path d="M 10 308 Q 70 292 130 308 Q 190 324 250 308 Q 310 292 390 308" 
+          fill="none" stroke="url(#waveGrad)" stroke-width="2" opacity="0.35"/>
+    <path d="M 10 324 Q 80 310 150 324 Q 220 338 290 324 Q 350 310 390 324" 
+          fill="none" stroke="url(#waveGrad)" stroke-width="1.5" opacity="0.2"/>
+  </g>
+
+  <!-- Play button background glow -->
+  <circle cx="200" cy="185" r="72" fill="#3b82f6" opacity="0.08" filter="url(#softglow)"/>
+
+  <!-- Play button outer ring -->
+  <circle cx="200" cy="185" r="68" fill="none" stroke="url(#playGrad)" stroke-width="1.5" opacity="0.4"/>
+
+  <!-- Play button inner circle -->
+  <circle cx="200" cy="185" r="58" fill="#0f172a" opacity="0.9"/>
+  <circle cx="200" cy="185" r="58" fill="url(#playGrad)" opacity="0.12"/>
+
+  <!-- Play triangle -->
+  <polygon points="188,163 188,207 226,185" fill="url(#playGrad)" filter="url(#glow)"/>
+
+  <!-- Text: Creek -->
+  <text x="200" y="274" 
+        font-family="Georgia, 'Times New Roman', serif" 
+        font-size="38" 
+        font-weight="700"
+        fill="white" 
+        text-anchor="middle"
+        letter-spacing="3">CREEK</text>
+
+  <!-- Text: TUBE -->
+  <text x="200" y="310" 
+        font-family="Georgia, 'Times New Roman', serif" 
+        font-size="24" 
+        font-weight="400"
+        fill="url(#playGrad)" 
+        text-anchor="middle"
+        letter-spacing="8"
+        filter="url(#glow)">TUBE</text>
+
+  <!-- Top accent dots -->
+  <circle cx="200" cy="108" r="3" fill="url(#playGrad)" opacity="0.6"/>
+  <circle cx="185" cy="112" r="2" fill="url(#playGrad)" opacity="0.3"/>
+  <circle cx="215" cy="112" r="2" fill="url(#playGrad)" opacity="0.3"/>
+</svg>

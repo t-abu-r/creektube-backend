@@ -214,45 +214,9 @@ JAZZMIN_SETTINGS = {
     "site_brand": "CreekTube",
     "welcome_sign": "Welcome to CreekTube Admin",
     "copyright": "CreekTube",
-    "site_logo": "https://res.cloudinary.com/dxwoysec8/image/upload/v1772973894/mrf6ru11yqiup9kiidke.svg",
-    "login_logo": "https://res.cloudinary.com/dxwoysec8/image/upload/v1772973894/mrf6ru11yqiup9kiidke.svg",
-    "site_logo_classes": "img-circle",
-    "login_logo_dark": None,
-    "site_icon": None,
-    "show_sidebar": True,
-    "navigation_expanded": True,
-    "hide_apps": [],
-    "hide_models": [],
-    "custom_links": {},
-    "custom_css": None,
-    "custom_js": None,
-    "use_google_fonts_cdn": True,
-    "show_ui_builder": False,
+    "site_logo": "/logo.svg",  # or path to your logo
 }
 
-JAZZMIN_UI_TWEAKS = {
-    "navbar_small_text": False,
-    "footer_small_text": False,
-    "body_small_text": False,
-    "brand_small_text": False,
-    "brand_colour": "navbar-dark",
-    "accent": "accent-primary",
-    "navbar": "navbar-dark",
-    "no_navbar_border": False,
-    "navbar_fixed": True,
-    "layout_boxed": False,
-    "footer_fixed": False,
-    "sidebar_fixed": True,
-    "sidebar": "sidebar-dark-primary",
-    "sidebar_nav_small_text": False,
-    "sidebar_disable_expand": False,
-    "sidebar_nav_child_indent": False,
-    "sidebar_nav_compact_style": False,
-    "sidebar_nav_legacy_style": False,
-    "sidebar_nav_flat_style": False,
-    "theme": "darkly",
-    "dark_mode_theme": "darkly",
-}
 
 # if DEBUG:
 #     MEDIA_ROOT = os.path.join(BASE_DIR, 'media')
