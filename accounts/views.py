@@ -251,15 +251,15 @@ class CheckUserPLan(APIView):
 class CheckUserInfo(APIView):
     permission_classes = [IsAuthenticated]
     def get(self, request):
-        user_profile = Profile.objects.get(user=request.user)
+        profile = Profile.objects.get(user=request.user)
 
         avatar = None
-        if user_profile.avatar:
-            avatar = user_profile.avatar.url
+        if profile.avatar:
+            avatar = profile.avatar_url
 
         return Response({
-            "id": user_profile.id,
+            "id": profile.pk,
             "username": request.user.username,
-            "plan": user_profile.get_plan_display(),
+            "plan": profile.get_plan_display(),
             "avatar": avatar
         })
