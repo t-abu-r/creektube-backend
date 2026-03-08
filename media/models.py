@@ -20,6 +20,7 @@ class MediaProfile(models.Model):
     # categories stored as dict: {category_slug: score}
     categories = models.JSONField(default=dict)
     moderator = models.BooleanField(default=False)
+    official = models.BooleanField(default=False)
 
     def __str__(self):
         return self.user.username

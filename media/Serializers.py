@@ -7,7 +7,7 @@ class MediaProfileSerializer(serializers.ModelSerializer):
     username = serializers.CharField(source='user.username', read_only=True)
     class Meta:
         model = MediaProfile
-        fields = ["id", "username", "categories", "moderator"]
+        fields = ["id", "username", "categories", "moderator", "official"]
 
 class CategoryVideoSerializer(serializers.ModelSerializer):
     class Meta:
