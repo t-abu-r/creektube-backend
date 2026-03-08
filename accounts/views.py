@@ -64,12 +64,8 @@ class JWTRegisterView(APIView):
             # Don't leak info — just respond with generic message
             return Response({"message": "If an account exists, a verification email has been sent"}, status=200)
 
-        # Create user
-        if username == "admin":
-            user = User.objects.create_superuser(username=username, email=email, password=password, is_active=True)
-            MediaProfile.objects.get_or_create(user=user, moderator=True)
-        else:
-            user = User.objects.create_user(username=username, email=email, password=password, is_active=True)
+
+        user = User.objects.create_user(username=username, email=email, password=password, is_active=True)
 
         # Create Profile safely
         Profile.objects.get_or_create(user=user)
