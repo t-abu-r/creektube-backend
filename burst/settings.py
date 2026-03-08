@@ -214,7 +214,6 @@ JAZZMIN_SETTINGS = {
     "site_brand": "CreekTube",
     "welcome_sign": "Welcome to CreekTube Admin",
     "copyright": "CreekTube",
-    "site_logo": "/logo.svg",  # or path to your logo
 }
 
 
