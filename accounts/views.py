@@ -250,16 +250,18 @@ class CheckUserPLan(APIView):
 
 class CheckUserInfo(APIView):
     permission_classes = [IsAuthenticated]
+
     def get(self, request):
-        profile = Profile.objects.get(user=request.user)
+        user_profile = Profile.objects.get(user=request.user)
+        media_profile = MediaProfile.objects.get(user=request.user)
 
         avatar = None
-        if profile.avatar:
-            avatar = profile.avatar_url
+        if user_profile.avatar:
+            avatar = user_profile.avatar.url
 
         return Response({
-            "id": profile.pk,
+            "id": media_profile.pk,
             "username": request.user.username,
-            "plan": profile.get_plan_display(),
+            "plan": user_profile.get_plan_display(),
             "avatar": avatar
         })
