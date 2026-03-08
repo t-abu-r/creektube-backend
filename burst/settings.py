@@ -184,7 +184,7 @@ DEFAULT_FROM_EMAIL = f"CreekTube <{EMAIL_HOST_USER}>"
 PASSWORD_RESET_TIMEOUT = 60 * 60 * 24
 
 STATIC_ROOT = os.path.join(BASE_DIR, 'staticfiles')
-STATICFILES_STORAGE = 'django.contrib.staticfiles.storage.StaticFilesStorage'
+STATICFILES_STORAGE = 'whitenoise.storage.CompressedStaticFilesStorage'
 ALLOWED_HOSTS = ['*']
 
 SECRET_KEY = os.environ.get('SECRET_KEY', 'your-default-secret-key')
@@ -217,3 +217,4 @@ DEFAULT_FILE_STORAGE = 'cloudinary_storage.storage.MediaCloudinaryStorage'
 
 DATA_UPLOAD_MAX_MEMORY_SIZE = 524288000  # 500MB
 FILE_UPLOAD_MAX_MEMORY_SIZE = 524288000  # 500MB
+WHITENOISE_USE_FINDERS = True
