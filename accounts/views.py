@@ -255,9 +255,10 @@ class CheckUserInfo(APIView):
 
         avatar = None
         if user_profile.avatar:
-            avatar = user_profile.avatar.url  # Cloudinary builds full URL automatically
+            avatar = user_profile.avatar.url
 
         return Response({
+            "id": user_profile.id,
             "username": request.user.username,
             "plan": user_profile.get_plan_display(),
             "avatar": avatar
