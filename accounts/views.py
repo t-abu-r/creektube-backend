@@ -20,6 +20,7 @@ from django.utils.encoding import force_bytes, force_str
 from django.utils.http import urlsafe_base64_encode, urlsafe_base64_decode
 from urllib.parse import unquote
 from media.models import MediaProfile
+from media.Serializers import MediaProfileSerializer
 from cloudinary.utils import cloudinary_url
 
 class VerifyEmailView(APIView):
@@ -254,6 +255,7 @@ class CheckUserInfo(APIView):
     def get(self, request):
         user_profile = Profile.objects.get(user=request.user)
         media_profile = MediaProfile.objects.get(user=request.user)
+        media = MediaProfileSerializer(media_profile).data
 
         avatar = None
         if user_profile.avatar:
