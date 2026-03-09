@@ -426,6 +426,7 @@ class Account(APIView):
             return Response({"error": "Profile not found"}, status=404)
 
         videos = Video.objects.filter(author=profile_media.user, is_approved=True)
+        creek_count = Creek.objects.filter(account=account).count()
 
         try:
             user_profile = Profile.objects.get(user=profile_media.user)
@@ -436,5 +437,6 @@ class Account(APIView):
         return Response({
             "profile": profile_data,
             "account": MediaProfileSerializer(profile_media).data,
-            "videos": VideoSerializer(videos, many=True).data
+            "videos": VideoSerializer(videos, many=True).data,
+            "creek_count": creek_count,
         }, status=200)
