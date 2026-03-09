@@ -121,7 +121,7 @@ class LoginWatchVideo(APIView):
         related_videos = approved_videos.filter(category=video.category).exclude(id=video_id).order_by('-timestamp')[:5]
 
         try:
-            like = Like.objects.get(video=video, user=request.user)
+            like = Like.objects.get(video=video, author=request.user)
             if_liked = True
         except Like.DoesNotExist:
             like = None
