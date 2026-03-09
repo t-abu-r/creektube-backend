@@ -74,7 +74,7 @@ class Like(models.Model):
 
 class DisPike(models.Model):
     author = models.ForeignKey(User, on_delete=models.CASCADE)
-    video = models.ForeignKey(Video, on_delete=models.CASCADE, related_name='likes')
+    video = models.ForeignKey(Video, on_delete=models.CASCADE, related_name='dispikes')
     created_at = models.DateTimeField(auto_now_add=True, null=True)
 
     def __str__(self):
@@ -82,7 +82,7 @@ class DisPike(models.Model):
 
 class Creek(models.Model):
     author = models.ForeignKey(User, on_delete=models.CASCADE)
-    account = models.ForeignKey(MediaProfile, on_delete=models.CASCADE, related_name='MediaProfile')
+    account = models.ForeignKey(MediaProfile, on_delete=models.CASCADE, related_name='account')
     created_at = models.DateTimeField(auto_now_add=True, null=True)
 
     def __str__(self):
