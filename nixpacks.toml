@@ -5,4 +5,4 @@ cmds = [
 ]
 
 [start]
-cmd = "python manage.py collectstatic --noinput && python manage.py migrate --fake media 0004 && python manage.py migrate --noinput && gunicorn burst.wsgi:application --workers 2 --bind 0.0.0.0:$PORT --timeout 900"
+cmd = "python manage.py collectstatic --noinput && python manage.py migrate --fake media 0005_mediaprofile_official_creek_dispike && python manage.py migrate --noinput && gunicorn burst.wsgi:application --workers 2 --bind 0.0.0.0:$PORT --timeout 900"
