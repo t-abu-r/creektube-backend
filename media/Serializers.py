@@ -1,7 +1,7 @@
 from rest_framework import serializers
 from accounts.models import Profile
 import os
-from .models import Video, MediaProfile, Comment, CategoryVideo
+from .models import Video, MediaProfile, Comment, CategoryVideo, Like
 
 class MediaProfileSerializer(serializers.ModelSerializer):
     username = serializers.CharField(source='user.username', read_only=True)
@@ -13,6 +13,13 @@ class CategoryVideoSerializer(serializers.ModelSerializer):
     class Meta:
         model = CategoryVideo
         fields = ["id", "name", "slug"]
+
+class LikeSerializer(serializers.ModelSerializer):
+    author = serializers.CharField(source="author.username", read_only=True)
+
+    class Meta:
+        model = Like
+        fields = ["id", "author", "video", "created_at"]
 
 class CommentSerializer(serializers.ModelSerializer):
     author = serializers.CharField(source="author.username", read_only=True)

@@ -4,12 +4,13 @@ from rest_framework import status
 from rest_framework.permissions import AllowAny, IsAuthenticated, IsAdminUser
 from accounts.models import Profile
 from rest_framework.response import Response
+from rest_framework.status import HTTP_400_BAD_REQUEST
 from rest_framework.views import APIView
 from django.utils import timezone
 from .permissions import IsModerator
-from .Serializers import VideoSerializer, MediaProfileSerializer
+from .Serializers import VideoSerializer, MediaProfileSerializer, LikeSerializer
 from accounts.serializers import ProfileSerializer
-from .models import Video, Comment, CategoryVideo, MediaProfile
+from .models import Video, Comment, CategoryVideo, MediaProfile, Like
 from django.db.models import Case, When, Q, IntegerField, Count
 from django.views.decorators.csrf import csrf_exempt
 import os
@@ -119,9 +120,20 @@ class LoginWatchVideo(APIView):
 
         related_videos = approved_videos.filter(category=video.category).exclude(id=video_id).order_by('-timestamp')[:5]
 
+        try:
+            like = Like.objects.get(video=video, user=request.user)
+            if_liked = True
+        except Like.DoesNotExist:
+            like = None
+            if_liked = False
+
+        like_count = Like.objects.filter(video=video).count()
+
         return Response({
             "video": VideoSerializer(video, context={'request': request}).data,
-            "related_videos": VideoSerializer(related_videos, many=True, context={'request': request}).data
+            "related_videos": VideoSerializer(related_videos, many=True, context={'request': request}).data,
+            "like": LikeSerializer(like).data if if_liked else False,
+            "like_count": like_count,
         }, status=status.HTTP_200_OK)
 
 class GuestWatchVideo(APIView):
@@ -201,7 +213,7 @@ class ModPanel(APIView):
         return Response({"detail": "Video deleted"}, status=status.HTTP_204_NO_CONTENT)
 
 # ---------------------------
-# Comment Video API
+# Interactable Video Features
 # ---------------------------
 @method_decorator(csrf_exempt, name='dispatch')
 class CommentVideo(APIView):
@@ -246,6 +258,24 @@ class UploadCommentVideo(APIView):
                 }
             }, status=status.HTTP_201_CREATED)
 
+class PikeVideo(APIView):
+    permission_classes = [IsAuthenticated]
+
+    def post(self, request):
+        video_id = request.data.get("id")
+
+        if not video_id:
+            return Response({"detail": "Video ID required"}, status=status.HTTP_400_BAD_REQUEST)
+
+        video = get_object_or_404(Video, id=video_id)
+
+        like, created = Like.objects.get_or_create(author=request.user, video=video)
+
+        if not created:
+            like.delete()
+            return Response({"liked": False}, status=status.HTTP_200_OK)
+
+        return Response({"liked": True}, status=status.HTTP_201_CREATED)
 
 # ---------------------------
 # Upload Video API

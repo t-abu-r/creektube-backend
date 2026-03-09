@@ -9,6 +9,7 @@ urlpatterns = [
     path("getownvideo/", GetOwnVideo.as_view(), name="GetOwnVideo"),
     path("uploadvideo/", UploadVideo.as_view(), name="UploadVideo"),
     path("uploadcommentvideo/", UploadCommentVideo.as_view(), name="UploadCommentVideo"),
+    path("pikevideo/", PikeVideo.as_view(), name="PikeVideo"),
     path("comment/", CommentVideo.as_view(), name="CommentVideo"),
     path("mod-panel/", ModPanel.as_view()),
     path("getmod/", IfModerator.as_view(), name="GetMod"),
