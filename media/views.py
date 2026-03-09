@@ -123,7 +123,8 @@ class LoginWatchVideo(APIView):
         try:
             like = Like.objects.get(video=video, author=request.user)
             dispike = DisPike.objects.get(video=video, author=request.user)
-            creek = Creek.objects.get(account=video.author, author=request.user)
+            video_author = MediaProfile.objects.get(user=video.author)
+            creek = Creek.objects.get(account=video_author, author=request.user)
             if_creeked = True
             if_dispiked = True
             if_liked = True
@@ -137,7 +138,7 @@ class LoginWatchVideo(APIView):
 
         like_count = Like.objects.filter(video=video).count()
         dispike_count = DisPike.objects.filter(video=video).count()
-        creek_count = Creek.objects.filter(account=video.author).count()
+        creek_count = Creek.objects.filter(account=video_author).count()
 
 
         return Response({
