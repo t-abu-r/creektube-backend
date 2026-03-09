@@ -5,15 +5,25 @@ import django.db.models.deletion
 class Migration(migrations.Migration):
 
     dependencies = [
-        ('media', '0004_alter_video_thumbnail_alter_video_video'),  # keep your existing dependency name
+        ('media', '0004_alter_video_thumbnail_alter_video_video'),
         ('auth', '0012_alter_user_first_name_max_length'),
     ]
 
     operations = [
-        # Safe - skips if column already exists
-        migrations.RunSQL(
-            sql="ALTER TABLE media_mediaprofile ADD COLUMN IF NOT EXISTS official boolean NOT NULL DEFAULT false;",
-            reverse_sql="ALTER TABLE media_mediaprofile DROP COLUMN IF EXISTS official;",
+        migrations.SeparateDatabaseAndState(
+            database_operations=[
+                migrations.RunSQL(
+                    sql="ALTER TABLE media_mediaprofile ADD COLUMN IF NOT EXISTS official boolean NOT NULL DEFAULT false;",
+                    reverse_sql="ALTER TABLE media_mediaprofile DROP COLUMN IF EXISTS official;",
+                ),
+            ],
+            state_operations=[
+                migrations.AddField(
+                    model_name='mediaprofile',
+                    name='official',
+                    field=models.BooleanField(default=False),
+                ),
+            ],
         ),
         migrations.CreateModel(
             name='Creek',
