@@ -1,7 +1,7 @@
 from rest_framework import serializers
 from accounts.models import Profile
 import os
-from .models import Video, MediaProfile, Comment, CategoryVideo, Like, DisPike
+from .models import *
 
 
 class MediaProfileSerializer(serializers.ModelSerializer):
