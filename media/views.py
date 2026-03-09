@@ -354,7 +354,7 @@ class CreekAccount(APIView):
         if not account_id:
             return Response({"detail": "Account ID required"}, status=status.HTTP_400_BAD_REQUEST)
 
-        account = get_object_or_404(id=account_id)
+        account = get_object_or_404(MediaProfile, id=account_id)
 
         creek, created = Creek.objects.get_or_create(author=request.user, account=account)
 
