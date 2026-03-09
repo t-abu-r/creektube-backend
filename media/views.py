@@ -352,11 +352,11 @@ class CreekAccount(APIView):
         account_id = request.data.get("id")
 
         if not account_id:
-            return Response({"detail": "Video ID required"}, status=status.HTTP_400_BAD_REQUEST)
+            return Response({"detail": "Account ID required"}, status=status.HTTP_400_BAD_REQUEST)
 
-        creek = get_object_or_404(id=account_id)
+        account = get_object_or_404(id=account_id)
 
-        creek, created = Creek.objects.get_or_create(author=request.user, account=creek)
+        creek, created = Creek.objects.get_or_create(author=request.user, account=account)
 
         if not created:
             creek.delete()
