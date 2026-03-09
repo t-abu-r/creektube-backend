@@ -5,7 +5,7 @@ import django.db.models.deletion
 class Migration(migrations.Migration):
 
     dependencies = [
-        ('media', '0004_alter_comment_video'),  # keep your existing dependency name
+        ('media', '0004_alter_video_thumbnail_alter_video_video'),  # keep your existing dependency name
         ('auth', '0012_alter_user_first_name_max_length'),
     ]
 
