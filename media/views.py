@@ -120,20 +120,27 @@ class LoginWatchVideo(APIView):
 
         related_videos = approved_videos.filter(category=video.category).exclude(id=video_id).order_by('-timestamp')[:5]
 
+        video_author = MediaProfile.objects.filter(id=video.author_id).first()
+
         try:
             like = Like.objects.get(video=video, author=request.user)
-            dispike = DisPike.objects.get(video=video, author=request.user)
-            video_author = MediaProfile.objects.get(id=video.author_id)
-            creek = Creek.objects.get(account=video_author, author=request.user)
-            if_creeked = True
-            if_dispiked = True
             if_liked = True
         except Like.DoesNotExist:
-            creek = None
             like = None
+            if_liked = False
+
+        try:
+            dispike = DisPike.objects.get(video=video, author=request.user)
+            if_dispiked = True
+        except DisPike.DoesNotExist:
             dispike = None
             if_dispiked = False
-            if_liked = False
+
+        try:
+            creek = Creek.objects.get(account=video_author, author=request.user)
+            if_creeked = True
+        except Creek.DoesNotExist:
+            creek = None
             if_creeked = False
 
         like_count = Like.objects.filter(video=video).count()
