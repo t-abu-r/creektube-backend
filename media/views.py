@@ -53,27 +53,36 @@ class LoginGetVideo(APIView):
         approved_videos = Video.objects.filter(is_approved=True)
 
         user_interest = request.user.mediaprofile.categories
+        creeked_account_ids = Creek.objects.filter(author=request.user).values_list('account_id', flat=True)
 
         # Sort categories by priority score (highest first)
         desired_order = sorted(user_interest.items(), key=lambda x: x[1], reverse=True)
         desired_order = [cat for cat, score in desired_order]
 
-        # Annotate each video with a "priority" based on its category slug
+        # Category priority annotation
         when_statements = [
             When(category__slug=cat_slug, then=pos)
             for pos, cat_slug in enumerate(desired_order)
         ]
 
+        # Creeked channel priority annotation (1 = from creeked channel, 0 = not)
         videos = approved_videos.annotate(
             category_order=Case(
                 *when_statements,
-                default=len(desired_order),  # categories not in user's interest come after
+                default=len(desired_order),
+                output_field=IntegerField(),
+            ),
+            is_creeked=Case(
+                When(author_id__in=creeked_account_ids, then=0),
+                default=1,
                 output_field=IntegerField(),
             )
-        ).order_by('category_order', '-timestamp')
+        ).order_by('category_order', 'is_creeked', '-timestamp')
+        #                                ↑ creeked channels bubble up within each category
 
         serializer = VideoSerializer(videos, many=True, context={'request': request})
         return Response(serializer.data, status=200)
+
 # GuestGetVideo
 class GuestGetVideo(APIView):
     permission_classes = [AllowAny]
