@@ -1,7 +1,8 @@
 from rest_framework import serializers
 from accounts.models import Profile
 import os
-from .models import Video, MediaProfile, Comment, CategoryVideo, Like
+from .models import Video, MediaProfile, Comment, CategoryVideo, Like, DisPike
+
 
 class MediaProfileSerializer(serializers.ModelSerializer):
     username = serializers.CharField(source='user.username', read_only=True)
@@ -20,6 +21,20 @@ class LikeSerializer(serializers.ModelSerializer):
     class Meta:
         model = Like
         fields = ["id", "author", "video", "created_at"]
+
+class DisPikeSerializer(serializers.ModelSerializer):
+    author = serializers.CharField(source="author.username", read_only=True)
+
+    class Meta:
+        model = DisPike
+        fields = ["id", "author", "video", "created_at"]
+
+class CreekSerializer(serializers.ModelSerializer):
+    author = serializers.CharField(source="author.username", read_only=True)
+
+    class Meta:
+        model = Creek
+        fields = ["id", "author", "account", "created_at"]
 
 class CommentSerializer(serializers.ModelSerializer):
     author = serializers.CharField(source="author.username", read_only=True)

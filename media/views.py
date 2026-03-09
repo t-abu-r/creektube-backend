@@ -8,9 +8,9 @@ from rest_framework.status import HTTP_400_BAD_REQUEST
 from rest_framework.views import APIView
 from django.utils import timezone
 from .permissions import IsModerator
-from .Serializers import VideoSerializer, MediaProfileSerializer, LikeSerializer
+from .Serializers import VideoSerializer, MediaProfileSerializer, LikeSerializer, DisPikeSerializer, CreekSerializer
 from accounts.serializers import ProfileSerializer
-from .models import Video, Comment, CategoryVideo, MediaProfile, Like
+from .models import Video, Comment, CategoryVideo, MediaProfile, Like, DisPike, Creek
 from django.db.models import Case, When, Q, IntegerField, Count
 from django.views.decorators.csrf import csrf_exempt
 import os
@@ -122,18 +122,33 @@ class LoginWatchVideo(APIView):
 
         try:
             like = Like.objects.get(video=video, author=request.user)
+            dispike = DisPike.objects.get(video=video, author=request.user)
+            creek = Creek.objects.get(account=video.author, author=request.user)
+            if_creeked = True
+            if_dispiked = True
             if_liked = True
         except Like.DoesNotExist:
+            creek = None
             like = None
+            dispike = None
+            if_dispiked = False
             if_liked = False
+            if_creeked = False
 
         like_count = Like.objects.filter(video=video).count()
+        dispike_count = DisPike.objects.filter(video=video).count()
+        creek_count = Creek.objects.filter(account=video.author).count()
+
 
         return Response({
             "video": VideoSerializer(video, context={'request': request}).data,
             "related_videos": VideoSerializer(related_videos, many=True, context={'request': request}).data,
             "like": LikeSerializer(like).data if if_liked else False,
             "like_count": like_count,
+            "dispike": DisPikeSerializer(dispike).data if if_dispiked else False,
+            "dispike_count": dispike_count,
+            "creek": CreekSerializer(creek).data if if_creeked else False,
+            "creek_count": creek_count,
         }, status=status.HTTP_200_OK)
 
 class GuestWatchVideo(APIView):
@@ -152,9 +167,35 @@ class GuestWatchVideo(APIView):
             category=video_category
         ).exclude(id=video_id).order_by('-timestamp')[:5]
 
+        try:
+            like = Like.objects.get(video=video, author=request.user)
+            dispike = DisPike.objects.get(video=video, author=request.user)
+            video_author_channel = MediaProfile.objects.get(user=request.user)
+            creek = Creek.objects.get(account=video_author_channel, author=request.user)
+            if_creeked = True
+            if_liked = True
+            if_dispiked = False
+        except Like.DoesNotExist:
+            dispike = None
+            creek = None
+            if_creeked = False
+            like = None
+            if_dispiked = False
+            if_liked = False
+
+        like_count = Like.objects.filter(video=video).count()
+        dispike_count = DisPike.objects.filter(video=video).count()
+        creek_count = Creek.objects.filter(account=video_author_channel).count()
+
         return Response({
             "video": VideoSerializer(video, context={'request': request}).data,
             "related_videos": VideoSerializer(related_videos, many=True, context={'request': request}).data,
+            "like": LikeSerializer(like).data if if_liked else False,
+            "like_count": like_count,
+            "dispike": DisPikeSerializer(dispike).data if if_dispiked else False,
+            "dispike_count": dispike_count,
+            "creek": CreekSerializer(creek).data if if_creeked else False,
+            "creek_count": creek_count,
         }, status=status.HTTP_200_OK)
 
 
@@ -277,6 +318,43 @@ class PikeVideo(APIView):
 
         return Response({"liked": True}, status=status.HTTP_201_CREATED)
 
+class DisPikeVideo(APIView):
+    permission_classes = [IsAuthenticated]
+
+    def post(self, request):
+        video_id = request.data.get("id")
+
+        if not video_id:
+            return Response({"detail": "Video ID required"}, status=status.HTTP_400_BAD_REQUEST)
+
+        video = get_object_or_404(Video, id=video_id)
+
+        dispike, created = DisPike.objects.get_or_create(author=request.user, video=video)
+
+        if not created:
+            dispike.delete()
+            return Response({"dispike": False}, status=status.HTTP_200_OK)
+
+        return Response({"dispike": True}, status=status.HTTP_201_CREATED)
+
+class CreekAccount(APIView):
+    permission_classes = [IsAuthenticated]
+
+    def post(self, request):
+        account_id = request.data.get("id")
+
+        if not account_id:
+            return Response({"detail": "Video ID required"}, status=status.HTTP_400_BAD_REQUEST)
+
+        creek = get_object_or_404(id=account_id)
+
+        creek, created = Creek.objects.get_or_create(author=request.user, account=creek)
+
+        if not created:
+            creek.delete()
+            return Response({"creek": False}, status=status.HTTP_200_OK)
+
+        return Response({"creek": True}, status=status.HTTP_201_CREATED)
 # ---------------------------
 # Upload Video API
 # ---------------------------

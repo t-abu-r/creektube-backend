@@ -62,7 +62,7 @@ class Comment(models.Model):
     timestamp = models.DateTimeField(auto_now_add=True)
 
 # -----------------------------
-# Likes
+# Pikes & Creek
 # -----------------------------
 class Like(models.Model):
     author = models.ForeignKey(User, on_delete=models.CASCADE)
@@ -70,4 +70,20 @@ class Like(models.Model):
     created_at = models.DateTimeField(auto_now_add=True, null=True)
 
     def __str__(self):
-        return f"{self.author.username} liked {self.video.title}"
+        return f"{self.author.username} Piked {self.video.title}"
+
+class DisPike(models.Model):
+    author = models.ForeignKey(User, on_delete=models.CASCADE)
+    video = models.ForeignKey(Video, on_delete=models.CASCADE, related_name='likes')
+    created_at = models.DateTimeField(auto_now_add=True, null=True)
+
+    def __str__(self):
+        return f"{self.author.username} DisPiked {self.video.title}"
+
+class Creek(models.Model):
+    author = models.ForeignKey(User, on_delete=models.CASCADE)
+    account = models.ForeignKey(MediaProfile, on_delete=models.CASCADE, related_name='MediaProfile')
+    created_at = models.DateTimeField(auto_now_add=True, null=True)
+
+    def __str__(self):
+        return f"{self.author.username} Creeked {self.account.username}"
