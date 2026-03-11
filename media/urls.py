@@ -12,6 +12,8 @@ urlpatterns = [
     path("pikevideo/", PikeVideo.as_view(), name="PikeVideo"),
     path("dispikevideo/", DisPikeVideo.as_view(), name="DisPikeVideo"),
     path("creekaccount/", CreekAccount.as_view(), name="CreekAccount"),
+    path("studio/", Studio.as_view(), name="Studio"),
+    path("categories/", Categories.as_view(), name="Studio"),
     path("comment/", CommentVideo.as_view(), name="CommentVideo"),
     path("mod-panel/", ModPanel.as_view()),
     path("getmod/", IfModerator.as_view(), name="GetMod"),

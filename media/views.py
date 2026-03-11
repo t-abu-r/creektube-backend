@@ -8,7 +8,7 @@ from rest_framework.status import HTTP_400_BAD_REQUEST
 from rest_framework.views import APIView
 from django.utils import timezone
 from .permissions import IsModerator
-from .Serializers import VideoSerializer, MediaProfileSerializer, LikeSerializer, DisPikeSerializer, CreekSerializer
+from .Serializers import *
 from accounts.serializers import ProfileSerializer
 from .models import Video, Comment, CategoryVideo, MediaProfile, Like, DisPike, Creek
 from django.db.models import Case, When, Q, IntegerField, Count
@@ -16,7 +16,7 @@ from django.views.decorators.csrf import csrf_exempt
 import os
 from django.conf import settings
 from django.utils.decorators import method_decorator
-
+from rest_framework.parsers import MultiPartParser, FormParser
 
 # ---------------------------
 # Set Interests API (logged-in users)
@@ -95,6 +95,7 @@ class GuestGetVideo(APIView):
         serializer = VideoSerializer(videos, many=True, context={'request': request})
         return Response(serializer.data, status=200)
 
+# Studio things
 class GetOwnVideo(APIView):
     permission_classes = [IsAuthenticated]
     def get(self, request):
@@ -102,6 +103,61 @@ class GetOwnVideo(APIView):
         serializer = VideoSerializer(videos, many=True, context={'request': request})
         return Response(serializer.data, status=200)
 
+class Categories(APIView):
+    permission_classes = [AllowAny]
+
+    def get(self, request):
+        categories = CategoryVideo.objects.annotate(video_count=Count('videos'))
+        serializer = CategoryVideoSerializer(categories, many=True)
+
+        data = []
+
+        for cat, s in zip(categories, serializer.data):
+            data.append({**s, "count": cat.video.count})
+
+        return Response(data, status=status.HTTP_200_OK)
+
+class Studio(APIView):
+    permission_classes = [IsAuthenticated]
+    parser_classes = [MultiPartParser, FormParser]
+
+    def patch(self, request):
+        video_id = request.data.get("id")
+        if not video_id:
+            return Response({"detail": "Video ID required"}, status=400)
+
+        video = get_object_or_404(Video, id=video_id, author=request.user)
+
+        title = request.data.get("title")
+        description = request.data.get("description")
+        thumbnail = request.data.get("thumbnail")
+        video_file = request.data.get("video")
+        category = request.data.get("category")
+
+        if title:
+            video.title = title
+        if description:
+            video.description = description
+        if thumbnail:
+            video.thumbnail = thumbnail
+        if video_file:
+            video.video = video_file
+            video.is_approved = False  # re-approve after video change
+        if category:
+            category_obj, _ = CategoryVideo.objects.get_or_create(name=category, slug=category)
+            video.category = category_obj
+
+        video.save()
+        return Response(VideoSerializer(video, context={'request': request}).data, status=200)
+
+    def delete(self, request):
+        video_id = request.data.get("id")
+        if not video_id:
+            return Response({"detail": "Video ID required"}, status=400)
+
+        video = get_object_or_404(Video, id=video_id, author=request.user)
+        video.delete()
+        return Response({"detail": "Video deleted"}, status=204)
 
 # ---------------------------
 # Watch Video API (boost logged-in user categories)
