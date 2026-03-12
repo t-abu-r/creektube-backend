@@ -109,13 +109,7 @@ class Categories(APIView):
     def get(self, request):
         categories = CategoryVideo.objects.annotate(video_count=Count('videos'))
         serializer = CategoryVideoSerializer(categories, many=True)
-
-        data = []
-
-        for cat, s in zip(categories, serializer.data):
-            data.append({**s, "count": cat.video.count})
-
-        return Response(data, status=status.HTTP_200_OK)
+        return Response(serializer.data, status=status.HTTP_200_OK)
 
 class Studio(APIView):
     permission_classes = [IsAuthenticated]

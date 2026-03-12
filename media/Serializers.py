@@ -11,9 +11,11 @@ class MediaProfileSerializer(serializers.ModelSerializer):
         fields = ["id", "username", "categories", "moderator", "official"]
 
 class CategoryVideoSerializer(serializers.ModelSerializer):
+    video_count = serializers.IntegerField(read_only=True)
+
     class Meta:
         model = CategoryVideo
-        fields = ["id", "name", "slug"]
+        fields = ["id", "name", "slug", "video_count"]
 
 class LikeSerializer(serializers.ModelSerializer):
     author = serializers.CharField(source="author.username", read_only=True)
