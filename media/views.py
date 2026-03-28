@@ -234,25 +234,20 @@ class GuestWatchVideo(APIView):
             category=video_category
         ).exclude(id=video_id).order_by('-timestamp')[:5]
 
-        try:
-            like = Like.objects.get(video=video, author=request.user)
-            dispike = DisPike.objects.get(video=video, author=request.user)
-            video_author_channel = MediaProfile.objects.get(user=request.user)
-            creek = Creek.objects.get(account=video_author_channel, author=request.user)
-            if_creeked = True
-            if_liked = True
-            if_dispiked = False
-        except Like.DoesNotExist:
-            dispike = None
-            creek = None
-            if_creeked = False
-            like = None
-            if_dispiked = False
-            if_liked = False
+        # Guest users don't have likes, dispikes, or creek relationships
+        if_liked = False
+        if_dispiked = False
+        if_creeked = False
+        like = None
+        dispike = None
+        creek = None
+
+        # Get video author for creek count
+        video_author_channel = MediaProfile.objects.filter(user=video.author).first()
 
         like_count = Like.objects.filter(video=video).count()
         dispike_count = DisPike.objects.filter(video=video).count()
-        creek_count = Creek.objects.filter(account=video_author_channel).count()
+        creek_count = Creek.objects.filter(account=video_author_channel).count() if video_author_channel else 0
 
         return Response({
             "video": VideoSerializer(video, context={'request': request}).data,
@@ -264,7 +259,6 @@ class GuestWatchVideo(APIView):
             "creek": CreekSerializer(creek).data if if_creeked else False,
             "creek_count": creek_count,
         }, status=status.HTTP_200_OK)
-
 
 class SearchVideo(APIView):
     permission_classes = [AllowAny]
