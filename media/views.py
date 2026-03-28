@@ -204,7 +204,7 @@ class LoginWatchVideo(APIView):
 
         like_count = Like.objects.filter(video=video).count()
         dispike_count = DisPike.objects.filter(video=video).count()
-        creek_count = Creek.objects.filter(account=video_author).count()
+        creek_count = Creek.objects.filter(account=video_author_channel).count() if video_author_channel else 0
 
 
         return Response({
