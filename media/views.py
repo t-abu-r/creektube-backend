@@ -196,7 +196,7 @@ class LoginWatchVideo(APIView):
             if_dispiked = False
 
         try:
-            creek = Creek.objects.get(account=video_author, author=request.user)
+            creek = Creek.objects.get(account=video_author_channel, author=request.user)
             if_creeked = True
         except Creek.DoesNotExist:
             creek = None
