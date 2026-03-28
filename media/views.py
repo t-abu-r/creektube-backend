@@ -179,7 +179,7 @@ class LoginWatchVideo(APIView):
 
         related_videos = approved_videos.filter(category=video.category).exclude(id=video_id).order_by('-timestamp')[:5]
 
-        video_author = MediaProfile.objects.filter(id=video.author_id).first()
+        video_author_channel = MediaProfile.objects.filter(user=video.author).first()
 
         try:
             like = Like.objects.get(video=video, author=request.user)
