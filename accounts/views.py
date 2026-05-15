@@ -73,7 +73,7 @@ class JWTRegisterView(APIView):
         # Generate UID and token
         uidb64 = urlsafe_base64_encode(force_bytes(user.pk)).rstrip("=")
         token = account_activation_token.make_token(user)
-        verify_url = f"http://127.0.0.1:3000/verify-email?uid={uidb64}&token={quote(token, safe='')}"
+        verify_url = f"{settings.FRONTEND_URL}/verify-email?uid={uidb64}&token={quote(token, safe='')}"
 
         subject = 'register'
         message = 'message'
@@ -175,7 +175,8 @@ class UpdateProfileView(APIView):
             token = default_token_generator.make_token(user)
             uid = urlsafe_base64_encode(force_bytes(user.pk))
 
-            link = f"https://creektube-production.up.railway.app/api/verify-email/{uid}/{token}/?new_email={new_email}"
+            api_url = request.build_absolute_uri('/').rstrip('/')
+            link = f"{api_url}/api/verify-email/{uid}/{token}/?new_email={new_email}"
 
             try:
                 send_mail(
@@ -227,7 +228,7 @@ class JWTResetPasswordView(APIView):
         uid = urlsafe_base64_encode(force_bytes(user.pk))
 
         # Construct reset link (Next.js frontend)
-        reset_link = f"http://localhost:3000/reset-password/{uid}/{token}/"
+        reset_link = f"{settings.FRONTEND_URL}/reset-password/{uid}/{token}/"
 
         # Send the email
         send_mail(
@@ -260,6 +261,7 @@ class CheckUserInfo(APIView):
         return Response({
             "id": media_profile.pk,
             "username": request.user.username,
+            "email": request.user.email,
             "plan": user_profile.get_plan_display(),
             "avatar": avatar
         })

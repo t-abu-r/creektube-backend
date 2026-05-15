@@ -1,0 +1,150 @@
+{% extends 'base.html' %}
+
+{% block extra_head %}
+    <style>
+        #chat-container {
+            /* Make the chat container scrollable */
+            overflow: scroll;
+            height: 280px;
+            border: 1px solid #ccc;
+            padding: 10px;
+            margin-bottom: 10px;
+        }
+        .chat {
+            margin-bottom: 10px;
+            padding: 5px;
+            background: #f5f5f5;
+            border-radius: 5px;
+        }
+        .show {
+            display: block;
+        }
+        .hide {
+            display: none;
+        }
+        #chat-input {
+            width: 300px;
+            padding: 8px;
+        }
+        #send-chat {
+            padding: 8px 16px;
+            cursor: pointer;
+        }
+    </style>
+{% endblock extra_head %}
+
+{% block content %}
+
+    {% if user.username == user2.username %}
+        <h3>Chat with yourself</h3>
+    {% else %}
+        <h3>Direct Chat with {{ user2.username }}</h3>
+    {% endif %}
+
+    <div id="chat-container">
+        {% for chat in chats %}
+            <div class="chat">
+                <p>
+                    <b>{{ chat.sender.user.username }}:</b>
+                    <span>{{ chat.text }}</span>
+                </p>
+                <p><small>{{ chat.log|date:'Y-m-d - h:i:s' }}</small></p>
+            </div>
+        {% endfor %}
+    </div>
+    <div>
+        <small id="info" class="hide">Message input should not be empty.</small>
+    </div>
+    <input id="chat-input" placeholder="Type a message..." />
+    <button id="send-chat">Send</button>
+    <br><br>
+    <a href="{% url 'directchat:home' %}">← Back to user list</a>
+
+    {{ user2.pk|json_script:'user2-pk' }}
+
+    <script>
+        // Setup user2 pk
+        const user2_pk = JSON.parse(document.querySelector('#user2-pk').innerText);
+
+        // Setup the websocket - using ws:// for local, wss:// for production
+        const ws_scheme = window.location.protocol === 'https:' ? 'wss://' : 'ws://';
+        const chatSocket = new WebSocket(
+            ws_scheme
+            + window.location.host
+            + '/ws/direct-chat/'
+            + user2_pk
+            + '/'
+        );
+
+        // When there is a message on websocket
+        chatSocket.onmessage = (e) => {
+            // Get and decode the message
+            const message = JSON.parse(e.data)['chatmodel'];
+
+            // Get the chat container and create chat div element for
+            // the message
+            const chatContainerEl = document.querySelector('#chat-container'),
+                chatEl = document.createElement('div');
+            chatEl.className = 'chat';
+
+            // Setup elements for message
+            const messageEl = document.createElement('p'),
+                senderEl = document.createElement('b'),
+                textEl = document.createElement('span'),
+                logEl = document.createElement('p');
+
+            // Put the message data to their corresponding element
+            senderEl.innerText = message.sender_username + ': ';
+            textEl.innerText = message.text;
+            logEl.innerText = message.log;
+            logEl.style.fontSize = 'small';
+
+            // Append the senderEl and textEl to messageEl
+            messageEl.appendChild(senderEl);
+            messageEl.appendChild(textEl);
+
+            // Append the messageEl and logEl to chatEl
+            chatEl.appendChild(messageEl);
+            chatEl.appendChild(logEl);
+
+            // Append the new message to chat container
+            chatContainerEl.appendChild(chatEl);
+
+            // Scroll to bottom
+            chatContainerEl.scrollTop = chatContainerEl.scrollHeight;
+        }
+
+        chatSocket.onclose = (e) => {
+            console.error('Chat socket closed unexpectedly');
+        };
+
+        // When enter has been clicked on #chat-input element
+        document.querySelector('#chat-input').focus();
+        document.querySelector('#chat-input').onkeyup = function(e) {
+            if (e.keyCode === 13) {  // enter, return
+                document.querySelector('#send-chat').click();
+            }
+        }
+
+        document.querySelector('#send-chat').onclick = (e) => {
+            const chatInput = document.querySelector('#chat-input');
+            const chatInfo = document.querySelector('#info');
+            if (!chatInput.value.trim()) {
+                // Show the chat info when chat input is empty
+                chatInfo.className = chatInfo.className.replace('hide', 'show');
+                return
+            }
+            // Send message to websocket
+            chatSocket.send(
+                    JSON.stringify(
+                        {
+                            message: chatInput.value.trim()
+                        }
+                    )
+            );
+            // Make the chat input empty and hide the chat info
+            chatInput.value = '';
+            chatInfo.className = chatInfo.className.replace('show', 'hide');
+        }
+    </script>
+{% endblock content %}

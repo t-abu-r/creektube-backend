@@ -82,18 +82,25 @@ class VideoSerializer(serializers.ModelSerializer):
     def get_video(self, obj):
         if not obj.video:
             return None
-        url = obj.video.url
-        if url.startswith("http"):
-            return url
-        return f"https://res.cloudinary.com/{os.environ.get('CLOUDINARY_CLOUD_NAME')}/{url}"
+        if hasattr(obj.video, 'url'):
+            new_url = obj.video.url
+            clean = new_url.removeprefix("/")
+            return clean
+        return None
 
     def get_thumbnail(self, obj):
         if not obj.thumbnail:
             return None
-        url = obj.thumbnail.url
-        if url.startswith("http"):
-            return url
-        return f"https://res.cloudinary.com/{os.environ.get('CLOUDINARY_CLOUD_NAME')}/{url}"
+        if hasattr(obj.thumbnail, 'url'):
+            url = obj.thumbnail.url
+            if os.environ.get('DEBUG') == 'True':
+                new_url = url
+                clean = new_url.removeprefix("/")
+                return clean
+            if url.startswith("http"):
+                return url
+            return f"https://res.cloudinary.com/{os.environ.get('CLOUDINARY_CLOUD_NAME')}/{url.lstrip('/')}"
+        return None
 
     def get_author_avatar(self, obj):
         try:

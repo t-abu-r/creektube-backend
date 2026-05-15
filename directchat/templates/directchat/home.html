@@ -1,0 +1,12 @@
+{% extends 'base.html' %}
+
+{% block content %}
+    <h3>Direct Chat - Select a user</h3>
+    <ol>
+        {% for object in users %}
+            <li>
+                <a href="{% url 'directchat:chat' object.pk %}">{{ object.username }}</a>
+            </li>
+        {% endfor %}
+    </ol>
+{% endblock content %}
