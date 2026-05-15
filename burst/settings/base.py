@@ -25,7 +25,6 @@ INSTALLED_APPS = [
     'accounts',
     "media",
     "rest_framework_simplejwt.token_blacklist",
-    "chat",
     "directchat",
 ]
 

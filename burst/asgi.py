@@ -24,18 +24,11 @@ try:
 
     # Import channels stuff after Django is initialized
     from channels.routing import ProtocolTypeRouter, URLRouter
-    from chat.middleware import JWTAuthMiddleware
-    from chat.routing import websocket_urlpatterns as chat_websocket_urlpatterns
-    from directchat.routing import websocket_urlpatterns as directchat_websocket_urlpatterns
-
-    # Combine websocket patterns
-    combined_websocket_urlpatterns = chat_websocket_urlpatterns + directchat_websocket_urlpatterns
+    from directchat.routing import websocket_urlpatterns
 
     application = ProtocolTypeRouter({
         "http": django_asgi_app,
-        "websocket": JWTAuthMiddleware(
-            URLRouter(combined_websocket_urlpatterns)
-        ),
+        "websocket": URLRouter(websocket_urlpatterns),
     })
 except Exception as e:
     import traceback
