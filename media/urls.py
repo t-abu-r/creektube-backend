@@ -13,6 +13,7 @@ urlpatterns = [
     path("dispikevideo/", DisPikeVideo.as_view(), name="DisPikeVideo"),
     path("creekaccount/", CreekAccount.as_view(), name="CreekAccount"),
     path("studio/", Studio.as_view(), name="Studio"),
+    path('studio/videos/<int:video_id>/', StudioVideoDelete.as_view(), name='studio-video-delete'),
     path("categories/", Categories.as_view(), name="Studio"),
     path("comment/", CommentVideo.as_view(), name="CommentVideo"),
     path("mod-panel/", ModPanel.as_view()),

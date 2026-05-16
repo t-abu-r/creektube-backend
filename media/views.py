@@ -144,14 +144,15 @@ class Studio(APIView):
         video.save()
         return Response(VideoSerializer(video, context={'request': request}).data, status=200)
 
-    def delete(self, request):
-        video_id = request.data.get("id")
-        if not video_id:
-            return Response({"detail": "Video ID required"}, status=400)
 
+
+class StudioVideoDelete(APIView):
+    permission_classes = [IsAuthenticated]
+
+    def delete(self, request, video_id):
         video = get_object_or_404(Video, id=video_id, author=request.user)
         video.delete()
-        return Response({"detail": "Video deleted"}, status=204)
+        return Response(status=204)
 
 # ---------------------------
 # Watch Video API (boost logged-in user categories)
