@@ -107,9 +107,12 @@ class VideoSerializer(serializers.ModelSerializer):
             profile = getattr(obj.author, "profile", None)
             if profile and profile.avatar:
                 url = profile.avatar.url
+
                 if url.startswith("http"):
-                    return url
-                return f"https://res.cloudinary.com/{os.environ.get('CLOUDINARY_CLOUD_NAME')}/{url.lstrip('/')}"
+                    return f"https://res.cloudinary.com/{os.environ.get('CLOUDINARY_CLOUD_NAME')}/{url.lstrip('/')}"
+
+                return url.lstrip('/')
+
         except Exception:
             pass
         return None

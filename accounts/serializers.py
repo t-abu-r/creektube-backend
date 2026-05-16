@@ -10,13 +10,18 @@ class ProfileSerializer(serializers.ModelSerializer):
         fields = ("id", "user", "plan", "avatar", "avatar_url", "bio")
 
     def get_avatar_url(self, obj):
-        request = self.context.get("request")
+        from django.conf import settings
         avatar = getattr(obj, 'avatar', None)
         if not avatar:
             return None
-        url = avatar.url
-        if url.startswith("http"):
+
+        if settings.DEBUG:
+            # In dev, return local path
+            request = self.context.get("request")
+            url = f"/uploads/avatars/{str(avatar)}"
+            if request:
+                return request.build_absolute_uri(url)
             return url
-        if request:
-            return request.build_absolute_uri(url)
-        return url
+
+        # In production, return Cloudinary URL
+        return avatar.url

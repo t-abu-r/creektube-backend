@@ -1,6 +1,11 @@
 from django.db import models
 from django.contrib.auth.models import User
 from cloudinary.models import CloudinaryField
+import os
+from dotenv import load_dotenv
+load_dotenv()
+
+debug = os.getenv('DEBUG', 'False')
 
 class PlanChoices(models.TextChoices):
     FREE = "free", "Free"
@@ -9,7 +14,12 @@ class PlanChoices(models.TextChoices):
 
 class Profile(models.Model):
     user = models.OneToOneField(User, on_delete=models.CASCADE)
-    avatar = CloudinaryField('image', blank=True, null=True)
+
+    if debug:
+        avatar = models.ImageField(upload_to='avatars/', blank=True, null=True)
+    else:
+        avatar = CloudinaryField('image', blank=True, null=True)
+
     bio = models.TextField(blank=True, null=True)
     plan = models.CharField(
         max_length=10,
