@@ -20,29 +20,21 @@ CSRF_TRUSTED_ORIGINS = [
 
 # Use local filesystem storage for media in development
 DEFAULT_FILE_STORAGE = 'django.core.files.storage.FileSystemStorage'
-MEDIA_URL = '/uploads/'
+MEDIA_URL = '/media/'
 MEDIA_ROOT = os.path.join(BASE_DIR, 'media')
 
-# Disable Cloudinary in development - use local storage instead
-CLOUDINARY_STORAGE = {
-    'CLOUD_NAME': None,
-    'API_KEY': None,
-    'API_SECRET': None
-}
+# Cloudinary disabled - using local storage
+# CLOUDINARY_STORAGE = {
+#     'CLOUD_NAME': None,
+#     'API_KEY': None,
+#     'API_SECRET': None
+# }
 
-# Ensure we don't use Cloudinary storage in development
-INSTALLED_APPS = [
-    app for app in INSTALLED_APPS 
-    if app not in ['cloudinary_storage', 'cloudinary']
-]
+# Cloudinary apps already removed in base.py, no need to filter here
+INSTALLED_APPS = INSTALLED_APPS
 
-# Database - fallback to SQLite if no DATABASE_URL
-DATABASES = {
-    'default': dj_database_url.config(
-        default=os.environ.get('DATABASE_URL', f'sqlite:///{os.path.join(BASE_DIR, "db.sqlite3")}'),
-        conn_max_age=600
-    )
-}
+# Database - use SQLite from base settings
+# DATABASES already set in base.py
 
 # Email backend for development (prints to console)
 EMAIL_BACKEND = 'django.core.mail.backends.console.EmailBackend'

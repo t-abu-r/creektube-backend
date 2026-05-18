@@ -21,7 +21,7 @@ from django.utils.http import urlsafe_base64_encode, urlsafe_base64_decode
 from urllib.parse import unquote
 from media.models import MediaProfile
 from media.Serializers import MediaProfileSerializer
-from cloudinary.utils import cloudinary_url
+# from cloudinary.utils import cloudinary_url  # Commented out - using local storage
 
 class VerifyEmailView(APIView):
     def get(self, request, uidb64, token):

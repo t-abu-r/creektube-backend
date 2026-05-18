@@ -1,6 +1,6 @@
 from django.db import models
 from django.contrib.auth.models import User
-from cloudinary.models import CloudinaryField
+# from cloudinary.models import CloudinaryField  # Commented out - using local storage
 import os
 from dotenv import load_dotenv
 load_dotenv()
@@ -15,10 +15,8 @@ class PlanChoices(models.TextChoices):
 class Profile(models.Model):
     user = models.OneToOneField(User, on_delete=models.CASCADE)
 
-    if debug:
-        avatar = models.ImageField(upload_to='avatars/', blank=True, null=True)
-    else:
-        avatar = CloudinaryField('image', blank=True, null=True)
+    # Use ImageField for all environments (local storage)
+    avatar = models.ImageField(upload_to='avatars/', blank=True, null=True)
 
     bio = models.TextField(blank=True, null=True)
     plan = models.CharField(

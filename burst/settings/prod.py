@@ -26,20 +26,15 @@ CSRF_TRUSTED_ORIGINS = [
     "https://creektube-production.up.railway.app",
 ]
 
-# Use Cloudinary for media storage in production
-DEFAULT_FILE_STORAGE = 'cloudinary_storage.storage.MediaCloudinaryStorage'
+# Use local filesystem storage for media in production
+# DEFAULT_FILE_STORAGE = 'cloudinary_storage.storage.MediaCloudinaryStorage'  # Commented out - using local storage
 
 # Security settings for production
 SECURE_PROXY_SSL_HEADER = ('HTTP_X_FORWARDED_PROTO', 'https')
 USE_X_FORWARDED_HOST = True
 
-# Database - must be set via environment variable
-DATABASES = {
-    'default': dj_database_url.config(
-        default=os.environ.get('DATABASE_URL'),
-        conn_max_age=600
-    )
-}
+# Database - use SQLite from base settings
+# DATABASES already set in base.py
 
 # Logging
 LOGGING = {
