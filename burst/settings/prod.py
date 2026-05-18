@@ -6,6 +6,12 @@ import os
 from .base import *
 import dj_database_url
 
+# Remove daphne (ASGI server) for PythonAnywhere WSGI deployment
+INSTALLED_APPS = [app for app in INSTALLED_APPS if app != 'daphne']
+
+# Remove channels-related apps for WSGI deployment (PythonAnywhere doesn't support WebSockets)
+INSTALLED_APPS = [app for app in INSTALLED_APPS if app not in ['channels', 'channels_redis']]
+
 DEBUG = False
 
 ALLOWED_HOSTS = ['*']
