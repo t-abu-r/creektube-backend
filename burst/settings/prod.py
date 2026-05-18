@@ -10,7 +10,7 @@ DEBUG = False
 
 ALLOWED_HOSTS = ['*']
 
-frontend_url = os.getenv('FRONTEND_URL', 'https://ahmadateeb.pythonanywhere.com/')
+frontend_url = os.getenv('FRONTEND_URL', 'https://ahmadateeb.pythonanywhere.com').rstrip('/')
 
 # Production CORS settings
 CORS_ALLOWED_ORIGINS = [
