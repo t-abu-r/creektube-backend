@@ -10,20 +10,20 @@ DEBUG = False
 
 ALLOWED_HOSTS = ['*']
 
+frontend_url = os.getenv('FRONTEND_URL', 'https://ahmadateeb.pythonanywhere.com/')
+
 # Production CORS settings
 CORS_ALLOWED_ORIGINS = [
-    "https://creektube-frontend.vercel.app",
-    "https://creektube-production.up.railway.app",
+    frontend_url,
 ]
 
 CORS_ALLOWED_ORIGIN_REGEXES = [
     r"^https://.*\.vercel\.app$",
-    r"^https://.*\.railway\.app$",
+    r"^https://.*\.pythonanywhere\.com$",
 ]
 
 CSRF_TRUSTED_ORIGINS = [
-    "https://creektube-frontend.vercel.app",
-    "https://creektube-production.up.railway.app",
+    frontend_url,
 ]
 
 # Use local filesystem storage for media in production
