@@ -12,15 +12,22 @@ INSTALLED_APPS = [app for app in INSTALLED_APPS if app != 'daphne']
 # Remove channels-related apps for WSGI deployment (PythonAnywhere doesn't support WebSockets)
 INSTALLED_APPS = [app for app in INSTALLED_APPS if app not in ['channels', 'channels_redis']]
 
+# Remove directchat app since it depends on channels
+INSTALLED_APPS = [app for app in INSTALLED_APPS if app != 'directchat']
+
+# Remove channel layers configuration since channels is not installed
+CHANNEL_LAYERS = None
+
 DEBUG = False
 
 ALLOWED_HOSTS = ['*']
 
-frontend_url = os.getenv('FRONTEND_URL', 'https://ahmadateeb.pythonanywhere.com').rstrip('/')
+frontend_url = os.getenv('FRONTEND_URL', 'https://creektube.vercel.app').rstrip('/')
 
 # Production CORS settings
 CORS_ALLOWED_ORIGINS = [
     frontend_url,
+    'https://creektube.vercel.app',
 ]
 
 CORS_ALLOWED_ORIGIN_REGEXES = [
@@ -30,6 +37,7 @@ CORS_ALLOWED_ORIGIN_REGEXES = [
 
 CSRF_TRUSTED_ORIGINS = [
     frontend_url,
+    'https://creektube.vercel.app',
 ]
 
 # Use local filesystem storage for media in production
