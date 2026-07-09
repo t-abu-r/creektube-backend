@@ -1,6 +1,7 @@
 """
 Production settings for burst project.
 """
+ASGI_APPLICATION = None
 
 import os
 from .base import *
