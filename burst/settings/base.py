@@ -127,7 +127,7 @@ EMAIL_HOST_PASSWORD = os.environ.get("EMAIL_HOST_PASSWORD")
 DEFAULT_FROM_EMAIL = f"CreekTube <{EMAIL_HOST_USER}>" if EMAIL_HOST_USER else None
 PASSWORD_RESET_TIMEOUT = 60 * 60 * 24
 
-Cloudinary settings - commented out, using local storage
+# Cloudinary settings - commented out, using local storage
 CLOUDINARY_STORAGE = {
     'CLOUD_NAME': os.environ.get('CLOUDINARY_CLOUD_NAME'),
     'API_KEY': os.environ.get('CLOUDINARY_API_KEY'),
