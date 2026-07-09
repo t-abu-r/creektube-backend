@@ -19,14 +19,14 @@ INSTALLED_APPS = [
     'django.contrib.sessions',
     'django.contrib.messages',
     'django.contrib.staticfiles',
-    'cloudinary_storage',  
+    'cloudinary_storage',
     'cloudinary', 
     'corsheaders',
     'rest_framework',
     'accounts',
     "media",
     "rest_framework_simplejwt.token_blacklist",
-    "directchat",
+    # "directchat",
 ]
 
 MIDDLEWARE = [
@@ -61,7 +61,7 @@ TEMPLATES = [
 ]
 
 WSGI_APPLICATION = 'burst.wsgi.application'
-ASGI_APPLICATION = 'burst.asgi.application'
+# ASGI_APPLICATION = 'burst.asgi.application'
 
 # Channels configuration
 CHANNEL_LAYERS = {
