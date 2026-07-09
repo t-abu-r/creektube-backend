@@ -15,7 +15,14 @@ INSTALLED_APPS = [app for app in INSTALLED_APPS if app not in ['channels', 'chan
 
 # Remove directchat app since it depends on channels
 INSTALLED_APPS = [app for app in INSTALLED_APPS if app != 'directchat']
-
+STORAGES = {
+    "default": {
+        "BACKEND": "cloudinary_storage.storage.MediaCloudinaryStorage",
+    },
+    "staticfiles": {
+        "BACKEND": "whitenoise.storage.CompressedManifestStaticFilesStorage",
+    },
+}
 # Remove channel layers configuration since channels is not installed
 CHANNEL_LAYERS = None
 
