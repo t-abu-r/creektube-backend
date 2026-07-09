@@ -19,8 +19,8 @@ INSTALLED_APPS = [
     'django.contrib.sessions',
     'django.contrib.messages',
     'django.contrib.staticfiles',
-    'cloudinary_storage',  # Commented out - using local storage
-    'cloudinary',  # Commented out - using local storage
+    'cloudinary_storage',  
+    'cloudinary', 
     'corsheaders',
     'rest_framework',
     'accounts',
