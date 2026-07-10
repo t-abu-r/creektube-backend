@@ -11,5 +11,10 @@
       "src": "/(.*)",
       "dest": "api/index.py"
     }
-  ]
+  ],
+  "github": {
+    "silent": true,
+    "autoJobCancelation": true,
+    "allowedBranches": ["main", "production"]
+  }
 }

@@ -67,8 +67,9 @@ class JWTRegisterView(APIView):
 
         user = User.objects.create_user(username=username, email=email, password=password, is_active=True)
 
-        # Create Profile safely
+        # Create profiles safely
         Profile.objects.get_or_create(user=user)
+        MediaProfile.objects.get_or_create(user=user)
 
         # Generate UID and token
         uidb64 = urlsafe_base64_encode(force_bytes(user.pk)).rstrip("=")
@@ -250,8 +251,8 @@ class CheckUserInfo(APIView):
     permission_classes = [IsAuthenticated]
 
     def get(self, request):
-        user_profile = Profile.objects.get(user=request.user)
-        media_profile = MediaProfile.objects.get(user=request.user)
+        user_profile, _ = Profile.objects.get_or_create(user=request.user)
+        media_profile, _ = MediaProfile.objects.get_or_create(user=request.user)
         media = MediaProfileSerializer(media_profile).data
 
         avatar = None

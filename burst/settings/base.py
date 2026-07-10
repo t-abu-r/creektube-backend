@@ -12,22 +12,16 @@ BASE_DIR = Path(__file__).resolve().parent.parent.parent
 
 # Application definition
 INSTALLED_APPS = [
-    # 'daphne',
-    'jazzmin',
     'django.contrib.admin',
     'django.contrib.auth',
     'django.contrib.contenttypes',
-    # 'django.contrib.sessions',
     'django.contrib.messages',
     'django.contrib.staticfiles',
-    'cloudinary_storage',
-    'cloudinary', 
     'corsheaders',
     'rest_framework',
     'accounts',
     "media",
     "rest_framework_simplejwt.token_blacklist",
-    # "directchat",
 ]
 
 MIDDLEWARE = [
