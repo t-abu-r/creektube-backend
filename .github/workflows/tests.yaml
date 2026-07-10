@@ -31,3 +31,4 @@ jobs:
           git checkout main
           git merge origin/test --allow-unrelated-histories -X theirs
           git push origin main
+          python manage.py collectstatic --noinput
