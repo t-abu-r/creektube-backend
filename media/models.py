@@ -1,6 +1,6 @@
 from django.db import models
 from django.contrib.auth.models import User
-# from cloudinary.models import CloudinaryField  # Commented out - using local storage
+from cloudinary.models import CloudinaryField  # Commented out - using local storage
 
 # -----------------------------
 # Category model (global)
@@ -45,7 +45,8 @@ class Video(models.Model):
     title = models.CharField(max_length=100)
     description = models.TextField()
     thumbnail = models.ImageField(upload_to='thumbnails/', null=True, blank=True)
-    video = models.FileField(upload_to='videos/', null=True, blank=True)
+    # video = models.FileField(upload_to='videos/', null=True, blank=True)
+    video = CloudinaryField('video', resource_type='video', null=True, blank=True)
     timestamp = models.DateTimeField(auto_now_add=True)
     is_approved = models.BooleanField(default=False)
 
