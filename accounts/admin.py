@@ -1,6 +1,8 @@
 from django.contrib import admin
 from .models import Profile
+from burst.admin_mixins import CloudinarySafeForm
 
-@admin.register(Profile)
 class ProfileAdmin(admin.ModelAdmin):
-    exclude = ('avatar',)
+    form = CloudinarySafeForm
+
+admin.site.register(Profile, ProfileAdmin)
