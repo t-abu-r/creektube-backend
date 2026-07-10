@@ -1,41 +1,29 @@
-name: CI
+name: Djano CI
 
 on:
   push:
-    branches: [test]
-
-permissions:
-  contents: write
+    branches: [ test ]
 
 jobs:
-  ci:
-    runs-on: ubuntu-latest
+  build:
+    runs-on:ubuntu-latest
+
     steps:
-      - uses: actions/checkout@v4
+      -uses: actions/checkout@v5
 
-      - uses: actions/setup-python@v5
-        with:
-          python-version: "3.12"
+      -name: SETTIN UP PYTHON
+       uses: actions/setup-python@v5
+       with:
+         python-version: 3.11
+         cache: "pip"
 
-      - run: pip install -r requirements.txt
+      -name: INstall dependencies
+       run: pip install -r requirements.txt
 
-      - run: python manage.py test
-
-      - run: pip install flake8 mypy
-      - run: flake8 .
-      - run: mypy .
-
-  merge-to-main:
-    needs: ci
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/github-script@v7
-        with:
-          script: |
-            await github.rest.repos.merge({
-              owner: context.repo.owner,
-              repo: context.repo.repo,
-              base: 'main',
-              head: context.ref.replace('refs/heads/', ''),
-              commit_message: 'chore: merge test into main [skip ci]'
-            });
+      -name: Run tests
+       run: python manage.py test
+       if: success()
+       - action: "Merge develop into main"
+       type: "GIT_MERGE"
+       branch: "test"
+       targetBranch: "main"
