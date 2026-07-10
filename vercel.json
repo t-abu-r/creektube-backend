@@ -12,6 +12,7 @@
       "dest": "api/index.py"
     }
   ],
+  "buildCommand": "python manage.py collectstatic --noinput",
   "github": {
     "silent": true,
     "autoJobCancelation": true,
