@@ -15,9 +15,11 @@ INSTALLED_APPS = [app for app in INSTALLED_APPS if app not in ['channels', 'chan
 
 # Remove directchat app since it depends on channels
 INSTALLED_APPS = [app for app in INSTALLED_APPS if app != 'directchat']
+INSTALLED_APPS = INSTALLED_APPS + ['cloudinary_storage']
+
 STORAGES = {
     "default": {
-        "BACKEND": "django.core.files.storage.FileSystemStorage",
+        "BACKEND": "cloudinary_storage.storage.MediaCloudinaryStorage",
     },
     "staticfiles": {
         "BACKEND": "whitenoise.storage.CompressedStaticFilesStorage",
@@ -49,8 +51,7 @@ CSRF_TRUSTED_ORIGINS = [origin for origin in [
     *os.environ.get('ADDITIONAL_CSRF_ORIGINS', '').split(','),
 ] if origin]
 
-# Use local filesystem storage for media in production
-# DEFAULT_FILE_STORAGE = 'cloudinary_storage.storage.MediaCloudinaryStorage'  # Commented out - using local storage
+
 
 # Security settings for production
 SECURE_PROXY_SSL_HEADER = ('HTTP_X_FORWARDED_PROTO', 'https')
