@@ -80,10 +80,11 @@ class JWTRegisterView(APIView):
         message = 'message'
 
         # Send email safely
-        try:
-            send_mail(subject, message, settings.DEFAULT_FROM_EMAIL, [email], fail_silently=False)
-        except Exception:
-            pass  # don't crash if email fails
+        if settings.DEFAULT_FROM_EMAIL:
+            try:
+                send_mail(subject, message, settings.DEFAULT_FROM_EMAIL, [email], fail_silently=False)
+            except Exception:
+                pass
 
         return Response({"message": "If an account exists, a verification email has been sent"}, status=200)
 User = get_user_model()
