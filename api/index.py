@@ -9,6 +9,12 @@ os.environ.setdefault(
     "burst.settings.prod"
 )
 
+import django
+django.setup()
+
+from django.core.management import call_command
+call_command("migrate", "--noinput")
+
 from django.core.wsgi import get_wsgi_application
 
 app = get_wsgi_application()
