@@ -9,8 +9,7 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-      -uses: actions/checkout@v5
-
+      -uses: actions/checkout@v5 
       -name: SETTIN UP PYTHON
       uses: actions/setup-python@v5
       with:
