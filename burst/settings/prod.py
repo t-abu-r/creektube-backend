@@ -17,12 +17,13 @@ INSTALLED_APPS = [app for app in INSTALLED_APPS if app not in ['channels', 'chan
 INSTALLED_APPS = [app for app in INSTALLED_APPS if app != 'directchat']
 STORAGES = {
     "default": {
-        "BACKEND": "cloudinary_storage.storage.MediaCloudinaryStorage",
+        "BACKEND": "django.core.files.storage.FileSystemStorage",
     },
     "staticfiles": {
-        "BACKEND": "whitenoise.storage.CompressedManifestStaticFilesStorage",
+        "BACKEND": "whitenoise.storage.CompressedStaticFilesStorage",
     },
 }
+WHITENOISE_USE_FINDERS = True
 # Remove channel layers configuration since channels is not installed
 CHANNEL_LAYERS = None
 
