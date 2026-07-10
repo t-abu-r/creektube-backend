@@ -52,7 +52,8 @@ class LoginGetVideo(APIView):
     def get(self, request):
         approved_videos = Video.objects.filter(is_approved=True)
 
-        user_interest = request.user.mediaprofile.categories
+        profile, _ = MediaProfile.objects.get_or_create(user=request.user)
+        user_interest = profile.categories
         creeked_account_ids = Creek.objects.filter(author=request.user).values_list('account_id', flat=True)
 
         # Sort categories by priority score (highest first)
