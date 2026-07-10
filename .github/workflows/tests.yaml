@@ -13,18 +13,17 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - uses: actions/setup-node@v4
-      - run: pip install pipenv 
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
 
-      - run: pipenv install
+      - run: pip install -r requirements.txt
 
-      - run: pipenv sync
+      - run: python manage.py test
 
-      - run: pipenv run pytest
-
-      - run: pipenv run flake8
-
-      - run: pipenv run mypy
+      - run: pip install flake8 mypy
+      - run: flake8 .
+      - run: mypy .
 
   merge-to-main:
     needs: ci
