@@ -93,13 +93,12 @@ class VideoSerializer(serializers.ModelSerializer):
             return None
         if hasattr(obj.thumbnail, 'url'):
             url = obj.thumbnail.url
-            if os.environ.get('DEBUG') == 'True':
-                new_url = url
-                clean = new_url.removeprefix("/")
+            if os.environ.get('DEBUG', 'False') == 'True':
+                clean = url.removeprefix("/")
                 return clean
             if url.startswith("http"):
                 return url
-            return f"https://res.cloudinary.com/{os.environ.get('CLOUDINARY_CLOUD_NAME')}/{url.lstrip('/')}"
+            return url.lstrip('/')
         return None
 
     def get_author_avatar(self, obj):
@@ -107,12 +106,9 @@ class VideoSerializer(serializers.ModelSerializer):
             profile = getattr(obj.author, "profile", None)
             if profile and profile.avatar:
                 url = profile.avatar.url
-
                 if url.startswith("http"):
-                    return f"https://res.cloudinary.com/{os.environ.get('CLOUDINARY_CLOUD_NAME')}/{url.lstrip('/')}"
-
+                    return url
                 return url.lstrip('/')
-
         except Exception:
             pass
         return None

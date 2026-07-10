@@ -2,6 +2,7 @@
 Management command to test directchat with auto-login.
 Usage: python manage.py test_directchat
 """
+import os
 from django.core.management.base import BaseCommand
 from django.contrib.auth.models import User
 from rest_framework_simplejwt.tokens import AccessToken
@@ -17,16 +18,18 @@ class Command(BaseCommand):
         self.stdout.write("=" * 50)
 
         # Create admin user
+        admin_username = os.environ.get('TEST_ADMIN_USERNAME', 'admin')
+        admin_password = os.environ.get('TEST_ADMIN_PASSWORD', 'password')
         user, created = User.objects.get_or_create(
-            username='admin',
+            username=admin_username,
             defaults={'email': 'admin@example.com', 'is_staff': True}
         )
-        if created or not user.check_password('password'):
-            user.set_password('password')
+        if created or not user.check_password(admin_password):
+            user.set_password(admin_password)
             user.save()
-            self.stdout.write(self.style.SUCCESS("[OK] Created admin user: admin / password"))
+            self.stdout.write(self.style.SUCCESS(f"[OK] Created admin user: {admin_username}"))
         else:
-            self.stdout.write(self.style.SUCCESS("[OK] Admin user exists: admin / password"))
+            self.stdout.write(self.style.SUCCESS(f"[OK] Admin user exists: {admin_username}"))
 
         # Ensure sender/receiver models exist
         SenderModel.objects.get_or_create(user=user)

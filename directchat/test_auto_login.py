@@ -4,6 +4,7 @@ Run with: python manage.py test directchat.test_auto_login
 """
 import asyncio
 import json
+import os
 from channels.testing import WebsocketCommunicator
 from django.test import TestCase, TransactionTestCase
 from django.contrib.auth.models import User
@@ -21,10 +22,12 @@ class AutoLoginAPITests(TestCase):
     def setUp(self):
         """Create admin user and authenticate automatically."""
         # Create admin user
+        self.username = os.environ.get('TEST_ADMIN_USERNAME', 'admin')
+        self.password = os.environ.get('TEST_ADMIN_PASSWORD', 'password')
         self.user = User.objects.create_user(
-            username='admin',
+            username=self.username,
             email='admin@example.com',
-            password='password',
+            password=self.password,
             is_staff=True
         )
         # Ensure sender/receiver models exist (created via signals, but use get_or_create to be safe)
@@ -101,10 +104,12 @@ class AutoLoginWebsocketTests(TransactionTestCase):
     def setUp(self):
         """Create admin user and authenticate automatically."""
         # Create admin user
+        self.username = os.environ.get('TEST_ADMIN_USERNAME', 'admin')
+        self.password = os.environ.get('TEST_ADMIN_PASSWORD', 'password')
         self.user = User.objects.create_user(
-            username='admin',
+            username=self.username,
             email='admin@example.com',
-            password='password'
+            password=self.password
         )
         # Ensure sender/receiver models exist
         SenderModel.objects.get_or_create(user=self.user)

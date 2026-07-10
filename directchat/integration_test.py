@@ -19,10 +19,10 @@ import threading
 import time
 
 # Configuration
-BASE_URL = "http://localhost:8000"
-WS_URL = "ws://localhost:8000"
-ADMIN_USERNAME = "admin"
-ADMIN_PASSWORD = "password"
+BASE_URL = os.environ.get("TEST_BASE_URL", "http://localhost:8000")
+WS_URL = os.environ.get("TEST_WS_URL", "ws://localhost:8000")
+ADMIN_USERNAME = os.environ.get("TEST_ADMIN_USERNAME", "admin")
+ADMIN_PASSWORD = os.environ.get("TEST_ADMIN_PASSWORD", "password")
 
 
 def setup_admin_user():

@@ -6,17 +6,12 @@ import os
 from .base import *
 import dj_database_url
 
-DEBUG = True
+DEBUG = os.environ.get('DEBUG', 'True').lower() == 'true'
 
-ALLOWED_HOSTS = ['localhost', '127.0.0.1']
-
-CORS_ALLOWED_ORIGINS = [
-    "http://localhost:3000",
-]
-
-CSRF_TRUSTED_ORIGINS = [
-    "http://localhost:3000",
-]
+ALLOWED_HOSTS = os.environ.get('ALLOWED_HOSTS', 'localhost,127.0.0.1').split(',')
+default_cors = "http://localhost:3000"
+CORS_ALLOWED_ORIGINS = os.environ.get('CORS_ALLOWED_ORIGINS', default_cors).split(',')
+CSRF_TRUSTED_ORIGINS = os.environ.get('CSRF_TRUSTED_ORIGINS', default_cors).split(',')
 
 # Use local filesystem storage for media in development
 DEFAULT_FILE_STORAGE = 'django.core.files.storage.FileSystemStorage'
@@ -55,6 +50,5 @@ LOGGING = {
 }
 
 # Ensure media directory exists
-import os
 if not os.path.exists(MEDIA_ROOT):
     os.makedirs(MEDIA_ROOT, exist_ok=True)
