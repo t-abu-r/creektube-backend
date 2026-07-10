@@ -35,8 +35,8 @@ frontend_url = os.getenv('FRONTEND_URL', '').rstrip('/')
 # Production CORS settings
 CORS_ALLOWED_ORIGINS = [origin for origin in [
     frontend_url,
-    os.environ.get('ADDITIONAL_CORS_ORIGINS', ''),
-].split(',') if origin]
+    *os.environ.get('ADDITIONAL_CORS_ORIGINS', '').split(','),
+] if origin]
 
 CORS_ALLOWED_ORIGIN_REGEXES = [
     r"^https://.*\.vercel\.app$",
@@ -45,8 +45,8 @@ CORS_ALLOWED_ORIGIN_REGEXES = [
 
 CSRF_TRUSTED_ORIGINS = [origin for origin in [
     frontend_url,
-    os.environ.get('ADDITIONAL_CSRF_ORIGINS', ''),
-].split(',') if origin]
+    *os.environ.get('ADDITIONAL_CSRF_ORIGINS', '').split(','),
+] if origin]
 
 # Use local filesystem storage for media in production
 # DEFAULT_FILE_STORAGE = 'cloudinary_storage.storage.MediaCloudinaryStorage'  # Commented out - using local storage
