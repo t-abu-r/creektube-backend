@@ -12,6 +12,7 @@ from .Serializers import *
 from accounts.serializers import ProfileSerializer
 from .models import Video, Comment, CategoryVideo, MediaProfile, Like, DisPike, Creek
 from django.db.models import Case, When, Q, IntegerField, Count
+from . import ranking
 from django.views.decorators.csrf import csrf_exempt
 import os
 from django.conf import settings
@@ -47,54 +48,109 @@ class SetInterests(APIView):
 # Get Videos API (feed)
 # ---------------------------
 class LoginGetVideo(APIView):
+    """
+    Personalized feed.
+
+    Instead of hard-bucketing by category (which let a user's top category
+    completely bury every other category, and never let a stale favorite
+    fall out of favor), every video gets a single composite score blending:
+      - interest affinity (how well it matches the user's category weights)
+      - engagement (net likes vs dislikes, log-dampened)
+      - recency (exponential decay, so old videos fade out gracefully)
+      - a bonus for creators the user follows ("creeked")
+    See media/ranking.py for the scoring itself.
+    """
     permission_classes = [IsAuthenticated]
 
     def get(self, request):
-        approved_videos = Video.objects.filter(is_approved=True)
-
         profile, _ = MediaProfile.objects.get_or_create(user=request.user)
         user_interest = profile.categories
-        creeked_account_ids = Creek.objects.filter(author=request.user).values_list('account_id', flat=True)
+        creeked_author_ids = set(
+            Creek.objects.filter(author=request.user)
+            .values_list('account__user_id', flat=True)
+        )
 
-        # Sort categories by priority score (highest first)
-        desired_order = sorted(user_interest.items(), key=lambda x: x[1], reverse=True)
-        desired_order = [cat for cat, score in desired_order]
+        # Pull like/dislike counts in one query rather than N+1-ing them
+        # inside the scoring loop.
+        approved_videos = (
+            Video.objects.filter(is_approved=True)
+            .select_related('category')
+            .annotate(num_likes=Count('likes', distinct=True), num_dislikes=Count('dispikes', distinct=True))
+        )
 
-        # Category priority annotation
-        when_statements = [
-            When(category__slug=cat_slug, then=pos)
-            for pos, cat_slug in enumerate(desired_order)
-        ]
+        # Cap how many candidates we score in Python. For a small/medium
+        # catalog this is effectively "all of them"; it keeps the endpoint
+        # bounded as the video count grows without needing a real search
+        # index yet.
+        CANDIDATE_LIMIT = 500
+        candidates = list(approved_videos.order_by('-timestamp')[:CANDIDATE_LIMIT])
 
-        # Creeked channel priority annotation (1 = from creeked channel, 0 = not)
-        videos = approved_videos.annotate(
-            category_order=Case(
-                *when_statements,
-                default=len(desired_order),
-                output_field=IntegerField(),
-            ),
-            is_creeked=Case(
-                When(author_id__in=creeked_account_ids, then=0),
-                default=1,
-                output_field=IntegerField(),
-            )
-        ).order_by('category_order', 'is_creeked', '-timestamp')
-        #                                ↑ creeked channels bubble up within each category
+        ranked = ranking.rank_videos(candidates, user_interest, creeked_author_ids)
 
-        serializer = VideoSerializer(videos, many=True, context={'request': request})
-        return Response(serializer.data, status=200)
+        # Simple pagination: ?page=1&page_size=20
+        try:
+            page = max(int(request.query_params.get('page', 1)), 1)
+        except (TypeError, ValueError):
+            page = 1
+        try:
+            page_size = min(max(int(request.query_params.get('page_size', 20)), 1), 100)
+        except (TypeError, ValueError):
+            page_size = 20
+
+        start = (page - 1) * page_size
+        page_videos = ranked[start:start + page_size]
+
+        serializer = VideoSerializer(page_videos, many=True, context={'request': request})
+        return Response({
+            "results": serializer.data,
+            "page": page,
+            "page_size": page_size,
+            "count": len(ranked),
+        }, status=200)
 
 # GuestGetVideo
 class GuestGetVideo(APIView):
+    """
+    Logged-out feed: no personalization possible, but it should still be a
+    "hot" ranking (engagement + recency decay) rather than an all-time like
+    count, which let one old viral video permanently camp at #1 forever and
+    starved new uploads of any visibility.
+    """
     permission_classes = [AllowAny]
-    def get(self, request):
-        # guest feed
-        approved_videos = Video.objects.filter(is_approved=True)
-        videos = approved_videos.annotate(num_likes=Count('likes')) \
-                        .order_by('-num_likes', '-timestamp')
 
-        serializer = VideoSerializer(videos, many=True, context={'request': request})
-        return Response(serializer.data, status=200)
+    def get(self, request):
+        approved_videos = (
+            Video.objects.filter(is_approved=True)
+            .select_related('category')
+            .annotate(num_likes=Count('likes', distinct=True), num_dislikes=Count('dispikes', distinct=True))
+        )
+
+        CANDIDATE_LIMIT = 500
+        candidates = list(approved_videos.order_by('-timestamp')[:CANDIDATE_LIMIT])
+        # No user interests or creeks for a guest; interest affinity falls
+        # back to the exploration floor for every video, so ranking is
+        # purely engagement + recency.
+        ranked = ranking.rank_videos(candidates, user_interests={}, creeked_author_ids=set())
+
+        try:
+            page = max(int(request.query_params.get('page', 1)), 1)
+        except (TypeError, ValueError):
+            page = 1
+        try:
+            page_size = min(max(int(request.query_params.get('page_size', 20)), 1), 100)
+        except (TypeError, ValueError):
+            page_size = 20
+
+        start = (page - 1) * page_size
+        page_videos = ranked[start:start + page_size]
+
+        serializer = VideoSerializer(page_videos, many=True, context={'request': request})
+        return Response({
+            "results": serializer.data,
+            "page": page,
+            "page_size": page_size,
+            "count": len(ranked),
+        }, status=200)
 
 # Studio things
 class GetOwnVideo(APIView):
@@ -173,13 +229,13 @@ class LoginWatchVideo(APIView):
         approved_videos = Video.objects.filter(is_approved=True)
         video = get_object_or_404(approved_videos.prefetch_related("comments__author"), id=video_id)
 
-        # Boost category score
+        # Boost category score (clamped so a binge on one category can't
+        # grow its score forever and permanently drown out everything else)
         profile, _ = MediaProfile.objects.get_or_create(user=request.user)
         if video.category:
-            cat_slug = video.category.slug
-            categories = profile.categories
-            categories[cat_slug] = categories.get(cat_slug, 0) + 1
-            profile.categories = categories
+            profile.categories = ranking.adjust_category_score(
+                profile.categories, video.category.slug, ranking.WATCH_BOOST
+            )
             profile.save()
 
         related_videos = approved_videos.filter(category=video.category).exclude(id=video_id).order_by('-timestamp')[:5]
@@ -397,6 +453,17 @@ class DisPikeVideo(APIView):
         video = get_object_or_404(Video, id=video_id)
 
         dispike, created = DisPike.objects.get_or_create(author=request.user, video=video)
+
+        # Previously a dislike had zero effect on the recommendation
+        # algorithm, so a user could dislike every video in a category and
+        # still keep getting fed that category. Now it nudges that
+        # category's score down (and undoing the dislike nudges it back up),
+        # same clamp as the positive watch-boost.
+        profile, _ = MediaProfile.objects.get_or_create(user=request.user)
+        if video.category:
+            delta = -ranking.DISLIKE_PENALTY if created else ranking.DISLIKE_PENALTY
+            profile.categories = ranking.adjust_category_score(profile.categories, video.category.slug, delta)
+            profile.save()
 
         if not created:
             dispike.delete()
