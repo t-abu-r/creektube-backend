@@ -10,12 +10,14 @@ class MediaProfileSerializer(serializers.ModelSerializer):
         model = MediaProfile
         fields = ["id", "username", "categories", "moderator", "official"]
 
+
 class CategoryVideoSerializer(serializers.ModelSerializer):
     video_count = serializers.IntegerField(read_only=True)
 
     class Meta:
         model = CategoryVideo
         fields = ["id", "name", "slug", "video_count"]
+
 
 class LikeSerializer(serializers.ModelSerializer):
     author = serializers.CharField(source="author.username", read_only=True)
@@ -24,12 +26,14 @@ class LikeSerializer(serializers.ModelSerializer):
         model = Like
         fields = ["id", "author", "video", "created_at"]
 
+
 class DisPikeSerializer(serializers.ModelSerializer):
     author = serializers.CharField(source="author.username", read_only=True)
 
     class Meta:
         model = DisPike
         fields = ["id", "author", "video", "created_at"]
+
 
 class CreekSerializer(serializers.ModelSerializer):
     author = serializers.CharField(source="author.username", read_only=True)
@@ -38,15 +42,15 @@ class CreekSerializer(serializers.ModelSerializer):
         model = Creek
         fields = ["id", "author", "account", "created_at"]
 
+
 class CommentSerializer(serializers.ModelSerializer):
     author = serializers.CharField(source="author.username", read_only=True)
-    author_avatar = serializers.SerializerMethodField()  # method must be `get_author_avatar`
+    author_avatar = serializers.SerializerMethodField()
 
     class Meta:
         model = Comment
-        fields = ["id", "author", "author_avatar", "text", "timestamp"]  # use your actual model field name
+        fields = ["id", "author", "author_avatar", "text", "timestamp"]
 
-    # This method name MUST match the SerializerMethodField name
     def get_author_avatar(self, obj):
         request = self.context.get("request")
         try:
@@ -62,16 +66,21 @@ class CommentSerializer(serializers.ModelSerializer):
 
 class VideoSerializer(serializers.ModelSerializer):
     author = serializers.CharField(source="author.username", read_only=True)
-    author_avatar = serializers.SerializerMethodField()  # ← was "avatar"
+    author_avatar = serializers.SerializerMethodField()
     thumbnail = serializers.SerializerMethodField()
     video = serializers.SerializerMethodField()
     comments = CommentSerializer(many=True, read_only=True)
     category = serializers.SlugRelatedField(slug_field="slug", read_only=True)
-    author_id = serializers.SerializerMethodField()  # ← add this
+    author_id = serializers.SerializerMethodField()
+    view_count = serializers.IntegerField(read_only=True)
 
     class Meta:
         model = Video
-        fields = ["id", "category", "title", "description", "thumbnail", "video", "timestamp", "is_approved", "author", "author_id", "author_avatar", "comments"]
+        fields = [
+            "id", "category", "title", "description", "thumbnail", "video",
+            "timestamp", "is_approved", "author", "author_id", "author_avatar",
+            "comments", "view_count",
+        ]
 
     def get_author_id(self, obj):
         try:

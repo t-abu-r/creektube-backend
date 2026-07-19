@@ -14,10 +14,12 @@ urlpatterns = [
     path("creekaccount/", CreekAccount.as_view(), name="CreekAccount"),
     path("studio/", Studio.as_view(), name="Studio"),
     path('studio/videos/<int:video_id>/', StudioVideoDelete.as_view(), name='studio-video-delete'),
-    path("categories/", Categories.as_view(), name="Studio"),
+    path("categories/", Categories.as_view(), name="Categories"),
     path("comment/", CommentVideo.as_view(), name="CommentVideo"),
     path("mod-panel/", ModPanel.as_view()),
     path("getmod/", IfModerator.as_view(), name="GetMod"),
     path("searchvideo/", SearchVideo.as_view(), name="SearchVideo"),
+    path("studio/comments/", StudioComments.as_view(), name="StudioComments"),
     path("account/", Account.as_view(), name="GetAccount"),
+    path("trackretention/", TrackRetention.as_view(), name="TrackRetention"),
 ]
