@@ -15,6 +15,7 @@ urlpatterns = [
     path("studio/", Studio.as_view(), name="Studio"),
     path('studio/videos/<int:video_id>/', StudioVideoDelete.as_view(), name='studio-video-delete'),
     path("categories/", Categories.as_view(), name="Categories"),
+    path("categories/manage/", CategoryManage.as_view(), name="CategoryManage"),
     path("comment/", CommentVideo.as_view(), name="CommentVideo"),
     path("mod-panel/", ModPanel.as_view()),
     path("getmod/", IfModerator.as_view(), name="GetMod"),
