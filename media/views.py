@@ -1,7 +1,6 @@
-from django.core.serializers import serialize
 from django.shortcuts import get_object_or_404
 from rest_framework import status
-from rest_framework.permissions import AllowAny, IsAuthenticated, IsAdminUser
+from rest_framework.permissions import AllowAny, IsAuthenticated
 from accounts.models import Profile
 from rest_framework.response import Response
 from rest_framework.status import HTTP_400_BAD_REQUEST
@@ -10,34 +9,87 @@ from django.utils import timezone
 from .permissions import IsModerator
 from .Serializers import *
 from accounts.serializers import ProfileSerializer
-from .models import Video, Comment, CategoryVideo, MediaProfile, Like, DisPike, Creek
-from django.db.models import Case, When, Q, IntegerField, Count
+from .models import (Video, Comment, CategoryVideo, MediaProfile, Like,
+                     DisPike, Creek, WatchEvent, UploadRateLimit)
+from django.db.models import Count, Q
 from . import ranking
 from django.views.decorators.csrf import csrf_exempt
-import os
-from django.conf import settings
 from django.utils.decorators import method_decorator
 from rest_framework.parsers import MultiPartParser, FormParser
+from datetime import timedelta
+
 
 # ---------------------------
-# Set Interests API (logged-in users)
+# Spam Prevention Helpers
+# ---------------------------
+UPLOAD_RATE_LIMIT = 3  # max uploads per hour
+UPLOAD_RATE_WINDOW = timedelta(hours=1)
+VIEW_DEDUP_WINDOW = timedelta(minutes=30)
+
+
+def check_upload_rate_limit(user):
+    """Returns True if user can upload (under rate limit), False if blocked."""
+    cutoff = timezone.now() - UPLOAD_RATE_WINDOW
+    recent_uploads = UploadRateLimit.objects.filter(
+        user=user, uploaded_at__gte=cutoff
+    ).count()
+    return recent_uploads < UPLOAD_RATE_LIMIT
+
+
+def record_upload(user):
+    """Record an upload event for rate limiting."""
+    UploadRateLimit.objects.create(user=user)
+
+
+def record_view(user, video):
+    """
+    Record a watch event with spam prevention.
+    Returns True if this counts as a new view (dedup), False if duplicate.
+    """
+    # Check for duplicate within dedup window
+    cutoff = timezone.now() - VIEW_DEDUP_WINDOW
+    is_duplicate = WatchEvent.objects.filter(
+        user=user, video=video, timestamp__gte=cutoff
+    ).exists()
+
+    if not is_duplicate:
+        Video.objects.filter(pk=video.pk).update(view_count=video.view_count + 1)
+
+    return not is_duplicate
+
+
+def get_or_create_session_id(user):
+    """Generate a session ID based on user's recent activity (30min window)."""
+    if not user or not user.is_authenticated:
+        return ""
+    cutoff = timezone.now() - VIEW_DEDUP_WINDOW
+    last_event = (
+        WatchEvent.objects.filter(user=user, timestamp__gte=cutoff)
+        .order_by('-timestamp')
+        .first()
+    )
+    if last_event and last_event.session_id:
+        return last_event.session_id
+    import uuid
+    return uuid.uuid4().hex[:16]
+
+
+# ---------------------------
+# Set Interests API
 # ---------------------------
 class SetInterests(APIView):
     permission_classes = [IsAuthenticated]
 
     def post(self, request):
-        categories = request.data.get("categories")  # expect a list
+        categories = request.data.get("categories")
         if not categories or not isinstance(categories, list):
             return Response({"detail": "Send a list of categories"}, status=status.HTTP_400_BAD_REQUEST)
 
-        # Validate categories
         for c in categories:
             if c not in CategoryVideo.values:
                 return Response({"detail": f"Invalid category: {c}"}, status=status.HTTP_400_BAD_REQUEST)
 
         profile, _ = Profile.objects.get_or_create(user=request.user)
-
-        # Initialize scores if first time
         profile.categories = {c: profile.categories.get(c, 10) for c in categories}
         profile.save()
 
@@ -48,18 +100,6 @@ class SetInterests(APIView):
 # Get Videos API (feed)
 # ---------------------------
 class LoginGetVideo(APIView):
-    """
-    Personalized feed.
-
-    Instead of hard-bucketing by category (which let a user's top category
-    completely bury every other category, and never let a stale favorite
-    fall out of favor), every video gets a single composite score blending:
-      - interest affinity (how well it matches the user's category weights)
-      - engagement (net likes vs dislikes, log-dampened)
-      - recency (exponential decay, so old videos fade out gracefully)
-      - a bonus for creators the user follows ("creeked")
-    See media/ranking.py for the scoring itself.
-    """
     permission_classes = [IsAuthenticated]
 
     def get(self, request):
@@ -70,24 +110,28 @@ class LoginGetVideo(APIView):
             .values_list('account__user_id', flat=True)
         )
 
-        # Pull like/dislike counts in one query rather than N+1-ing them
-        # inside the scoring loop.
         approved_videos = (
             Video.objects.filter(is_approved=True)
             .select_related('category')
-            .annotate(num_likes=Count('likes', distinct=True), num_dislikes=Count('dispikes', distinct=True))
+            .annotate(
+                num_likes=Count('likes', distinct=True),
+                num_dislikes=Count('dispikes', distinct=True),
+            )
         )
 
-        # Cap how many candidates we score in Python. For a small/medium
-        # catalog this is effectively "all of them"; it keeps the endpoint
-        # bounded as the video count grows without needing a real search
-        # index yet.
         CANDIDATE_LIMIT = 500
         candidates = list(approved_videos.order_by('-timestamp')[:CANDIDATE_LIMIT])
 
-        ranked = ranking.rank_videos(candidates, user_interest, creeked_author_ids)
+        # Build co-watch map from user's recent history
+        user_recent_ids = ranking.get_user_recent_video_ids(request.user)
+        candidate_ids = [v.id for v in candidates]
+        cowatch_map = ranking.build_cowatch_map(user_recent_ids, candidate_ids) if user_recent_ids else {}
 
-        # Simple pagination: ?page=1&page_size=20
+        ranked = ranking.rank_videos(
+            candidates, user_interest, creeked_author_ids,
+            cowatch_map=cowatch_map, user_recent_video_ids=user_recent_ids,
+        )
+
         try:
             page = max(int(request.query_params.get('page', 1)), 1)
         except (TypeError, ValueError):
@@ -108,28 +152,22 @@ class LoginGetVideo(APIView):
             "count": len(ranked),
         }, status=200)
 
-# GuestGetVideo
+
 class GuestGetVideo(APIView):
-    """
-    Logged-out feed: no personalization possible, but it should still be a
-    "hot" ranking (engagement + recency decay) rather than an all-time like
-    count, which let one old viral video permanently camp at #1 forever and
-    starved new uploads of any visibility.
-    """
     permission_classes = [AllowAny]
 
     def get(self, request):
         approved_videos = (
             Video.objects.filter(is_approved=True)
             .select_related('category')
-            .annotate(num_likes=Count('likes', distinct=True), num_dislikes=Count('dispikes', distinct=True))
+            .annotate(
+                num_likes=Count('likes', distinct=True),
+                num_dislikes=Count('dispikes', distinct=True),
+            )
         )
 
         CANDIDATE_LIMIT = 500
         candidates = list(approved_videos.order_by('-timestamp')[:CANDIDATE_LIMIT])
-        # No user interests or creeks for a guest; interest affinity falls
-        # back to the exploration floor for every video, so ranking is
-        # purely engagement + recency.
         ranked = ranking.rank_videos(candidates, user_interests={}, creeked_author_ids=set())
 
         try:
@@ -152,13 +190,21 @@ class GuestGetVideo(APIView):
             "count": len(ranked),
         }, status=200)
 
-# Studio things
+
+# ---------------------------
+# Studio
+# ---------------------------
 class GetOwnVideo(APIView):
     permission_classes = [IsAuthenticated]
+
     def get(self, request):
-        videos = Video.objects.filter(author=request.user)
+        videos = Video.objects.filter(author=request.user).annotate(
+            num_likes=Count('likes', distinct=True),
+            num_dislikes=Count('dispikes', distinct=True),
+        )
         serializer = VideoSerializer(videos, many=True, context={'request': request})
         return Response(serializer.data, status=200)
+
 
 class Categories(APIView):
     permission_classes = [AllowAny]
@@ -167,6 +213,7 @@ class Categories(APIView):
         categories = CategoryVideo.objects.annotate(video_count=Count('videos'))
         serializer = CategoryVideoSerializer(categories, many=True)
         return Response(serializer.data, status=status.HTTP_200_OK)
+
 
 class Studio(APIView):
     permission_classes = [IsAuthenticated]
@@ -193,7 +240,7 @@ class Studio(APIView):
             video.thumbnail = thumbnail
         if video_file:
             video.video = video_file
-            video.is_approved = False  # re-approve after video change
+            video.is_approved = False
         if category:
             category_obj, _ = CategoryVideo.objects.get_or_create(name=category, slug=category)
             video.category = category_obj
@@ -205,7 +252,6 @@ class Studio(APIView):
         return Response(VideoSerializer(video, context={'request': request}).data, status=200)
 
 
-
 class StudioVideoDelete(APIView):
     permission_classes = [IsAuthenticated]
 
@@ -214,10 +260,10 @@ class StudioVideoDelete(APIView):
         video.delete()
         return Response(status=204)
 
-# ---------------------------
-# Watch Video API (boost logged-in user categories)
-# ---------------------------
 
+# ---------------------------
+# Watch Video API
+# ---------------------------
 class LoginWatchVideo(APIView):
     permission_classes = [IsAuthenticated]
 
@@ -229,8 +275,7 @@ class LoginWatchVideo(APIView):
         approved_videos = Video.objects.filter(is_approved=True)
         video = get_object_or_404(approved_videos.prefetch_related("comments__author"), id=video_id)
 
-        # Boost category score (clamped so a binge on one category can't
-        # grow its score forever and permanently drown out everything else)
+        # Boost category score
         profile, _ = MediaProfile.objects.get_or_create(user=request.user)
         if video.category:
             profile.categories = ranking.adjust_category_score(
@@ -238,7 +283,58 @@ class LoginWatchVideo(APIView):
             )
             profile.save()
 
-        related_videos = approved_videos.filter(category=video.category).exclude(id=video_id).order_by('-timestamp')[:5]
+        # Record watch event with spam prevention
+        # Check view dedup BEFORE creating the event
+        session_id = get_or_create_session_id(request.user)
+        record_view(request.user, video)
+        WatchEvent.objects.create(
+            user=request.user,
+            video=video,
+            session_id=session_id,
+        )
+
+        # Co-watch powered related videos
+        user_recent_ids = ranking.get_user_recent_video_ids(request.user)
+        if user_recent_ids:
+            cowatch_map = ranking.build_cowatch_map(user_recent_ids, [video.id])
+            # Get co-watch related video IDs, sorted by score
+            sorted_cowatch = sorted(cowatch_map.items(), key=lambda x: x[1], reverse=True)
+            cowatch_video_ids = [vid for vid, _ in sorted_cowatch[:10]]
+            if cowatch_video_ids:
+                cowatch_videos = list(
+                    approved_videos.filter(id__in=cowatch_video_ids)
+                    .select_related('category')
+                    .annotate(
+                        num_likes=Count('likes', distinct=True),
+                        num_dislikes=Count('dispikes', distinct=True),
+                    )
+                )
+                # Sort by co-watch score
+                cowatch_order = {vid: i for i, vid in enumerate(cowatch_video_ids)}
+                cowatch_videos.sort(key=lambda v: cowatch_order.get(v.id, 999))
+                # Fill remaining with category-based
+                remaining = 5 - len(cowatch_videos)
+                if remaining > 0:
+                    cat_vids = list(
+                        approved_videos.filter(category=video.category)
+                        .exclude(id=video.id)
+                        .exclude(id__in=cowatch_video_ids)
+                        .order_by('-timestamp')[:remaining]
+                    )
+                    cowatch_videos.extend(cat_vids)
+                related_videos = cowatch_videos[:5]
+            else:
+                related_videos = list(
+                    approved_videos.filter(category=video.category)
+                    .exclude(id=video.id)
+                    .order_by('-timestamp')[:5]
+                )
+        else:
+            related_videos = list(
+                approved_videos.filter(category=video.category)
+                .exclude(id=video.id)
+                .order_by('-timestamp')[:5]
+            )
 
         video_author_channel = MediaProfile.objects.filter(user=video.author).first()
 
@@ -266,8 +362,6 @@ class LoginWatchVideo(APIView):
         like_count = Like.objects.filter(video=video).count()
         dispike_count = DisPike.objects.filter(video=video).count()
         creek_count = Creek.objects.filter(account=video_author_channel).count() if video_author_channel else 0
-        creek_count = creek_count
-
 
         return Response({
             "video": VideoSerializer(video, context={'request': request}).data,
@@ -279,6 +373,7 @@ class LoginWatchVideo(APIView):
             "creek": CreekSerializer(creek).data if if_creeked else False,
             "creek_count": creek_count,
         }, status=status.HTTP_200_OK)
+
 
 class GuestWatchVideo(APIView):
     permission_classes = [AllowAny]
@@ -296,31 +391,58 @@ class GuestWatchVideo(APIView):
             category=video_category
         ).exclude(id=video_id).order_by('-timestamp')[:5]
 
-        # Guest users don't have likes, dispikes, or creek relationships
-        if_liked = False
-        if_dispiked = False
-        if_creeked = False
-        like = None
-        dispike = None
-        creek = None
-
-        # Get video author for creek count
-        video_author_channel = MediaProfile.objects.filter(user=video.author).first()
-
         like_count = Like.objects.filter(video=video).count()
         dispike_count = DisPike.objects.filter(video=video).count()
+        video_author_channel = MediaProfile.objects.filter(user=video.author).first()
         creek_count = Creek.objects.filter(account=video_author_channel).count() if video_author_channel else 0
 
         return Response({
             "video": VideoSerializer(video, context={'request': request}).data,
             "related_videos": VideoSerializer(related_videos, many=True, context={'request': request}).data,
-            "like": LikeSerializer(like).data if if_liked else False,
+            "like": False,
             "like_count": like_count,
-            "dispike": DisPikeSerializer(dispike).data if if_dispiked else False,
+            "dispike": False,
             "dispike_count": dispike_count,
-            "creek": CreekSerializer(creek).data if if_creeked else False,
+            "creek": False,
             "creek_count": creek_count,
         }, status=status.HTTP_200_OK)
+
+
+# ---------------------------
+# Watch Retention Tracking
+# ---------------------------
+class TrackRetention(APIView):
+    permission_classes = [IsAuthenticated]
+
+    def post(self, request):
+        video_id = request.data.get("video_id")
+        duration = request.data.get("duration", 0)
+
+        if not video_id:
+            return Response({"detail": "Video ID required"}, status=400)
+
+        try:
+            duration = int(duration)
+        except (TypeError, ValueError):
+            duration = 0
+
+        duration = max(0, min(duration, 86400))  # cap at 24 hours
+
+        video = get_object_or_404(Video, id=video_id)
+        session_id = get_or_create_session_id(request.user)
+
+        # Update the most recent WatchEvent for this user+video+session
+        recent = (
+            WatchEvent.objects.filter(user=request.user, video=video, session_id=session_id)
+            .order_by('-timestamp')
+            .first()
+        )
+        if recent:
+            recent.duration_watched = max(recent.duration_watched, duration)
+            recent.save(update_fields=['duration_watched'])
+
+        return Response({"status": "ok"}, status=200)
+
 
 class SearchVideo(APIView):
     permission_classes = [AllowAny]
@@ -339,9 +461,9 @@ class SearchVideo(APIView):
             Q(description__icontains=title)
         ).order_by("-id")[:10]
 
-        serializer = VideoSerializer(videos, many=True)
-
+        serializer = VideoSerializer(videos, many=True, context={'request': request})
         return Response(serializer.data, status=status.HTTP_200_OK)
+
 
 class IfModerator(APIView):
     permission_classes = [IsModerator]
@@ -365,7 +487,7 @@ class ModPanel(APIView):
         video = get_object_or_404(Video, id=video_id)
         video.is_approved = not video.is_approved
         video.save()
-        serializer = VideoSerializer(video)
+        serializer = VideoSerializer(video, context={'request': request})
         return Response(serializer.data, status=status.HTTP_200_OK)
 
     def delete(self, request):
@@ -376,6 +498,7 @@ class ModPanel(APIView):
         video.delete()
         return Response({"detail": "Video deleted"}, status=status.HTTP_204_NO_CONTENT)
 
+
 # ---------------------------
 # Interactable Video Features
 # ---------------------------
@@ -385,10 +508,10 @@ class CommentVideo(APIView):
         video_id = request.query_params.get('video_id')
         if not video_id:
             return Response({'message': 'No video ID provided'}, status=status.HTTP_400_BAD_REQUEST)
-        
+
         video = get_object_or_404(Video, id=video_id)
         comments = Comment.objects.filter(video=video).order_by('timestamp')
-        
+
         return Response([{
             'id': c.id,
             'text': c.text,
@@ -396,43 +519,43 @@ class CommentVideo(APIView):
             'timestamp': c.timestamp
         } for c in comments], status=status.HTTP_200_OK)
 
+
 @method_decorator(csrf_exempt, name='dispatch')
 class UploadCommentVideo(APIView):
     permission_classes = [IsAuthenticated]
+
     def post(self, request):
-            author = request.user
-            comment_text = request.data.get('comment')
-            video_id = request.data.get('video_id')
+        author = request.user
+        comment_text = request.data.get('comment')
+        video_id = request.data.get('video_id')
 
-            if not comment_text:
-                return Response({'message': 'No comment provided'}, status=status.HTTP_400_BAD_REQUEST)
+        if not comment_text:
+            return Response({'message': 'No comment provided'}, status=status.HTTP_400_BAD_REQUEST)
 
-            video = get_object_or_404(Video, id=video_id)
+        video = get_object_or_404(Video, id=video_id)
+        comment = Comment.objects.create(author=author, video=video, text=comment_text)
 
-            comment = Comment.objects.create(author=author, video=video, text=comment_text)
+        return Response({
+            'message': 'Comment added successfully',
+            'comment': {
+                'id': comment.id,
+                'text': comment.text,
+                'author': author.username,
+                'video_id': video.id,
+                'timestamp': comment.timestamp
+            }
+        }, status=status.HTTP_201_CREATED)
 
-            return Response({
-                'message': 'Comment added successfully',
-                'comment': {
-                    'id': comment.id,
-                    'text': comment.text,
-                    'author': author.username,
-                    'video_id': video.id,
-                    'timestamp': comment.timestamp
-                }
-            }, status=status.HTTP_201_CREATED)
 
 class PikeVideo(APIView):
     permission_classes = [IsAuthenticated]
 
     def post(self, request):
         video_id = request.data.get("id")
-
         if not video_id:
             return Response({"detail": "Video ID required"}, status=status.HTTP_400_BAD_REQUEST)
 
         video = get_object_or_404(Video, id=video_id)
-
         like, created = Like.objects.get_or_create(author=request.user, video=video)
 
         if not created:
@@ -441,24 +564,18 @@ class PikeVideo(APIView):
 
         return Response({"liked": True}, status=status.HTTP_201_CREATED)
 
+
 class DisPikeVideo(APIView):
     permission_classes = [IsAuthenticated]
 
     def post(self, request):
         video_id = request.data.get("id")
-
         if not video_id:
             return Response({"detail": "Video ID required"}, status=status.HTTP_400_BAD_REQUEST)
 
         video = get_object_or_404(Video, id=video_id)
-
         dispike, created = DisPike.objects.get_or_create(author=request.user, video=video)
 
-        # Previously a dislike had zero effect on the recommendation
-        # algorithm, so a user could dislike every video in a category and
-        # still keep getting fed that category. Now it nudges that
-        # category's score down (and undoing the dislike nudges it back up),
-        # same clamp as the positive watch-boost.
         profile, _ = MediaProfile.objects.get_or_create(user=request.user)
         if video.category:
             delta = -ranking.DISLIKE_PENALTY if created else ranking.DISLIKE_PENALTY
@@ -471,17 +588,16 @@ class DisPikeVideo(APIView):
 
         return Response({"dispike": True}, status=status.HTTP_201_CREATED)
 
+
 class CreekAccount(APIView):
     permission_classes = [IsAuthenticated]
 
     def post(self, request):
         account_id = request.data.get("id")
-
         if not account_id:
             return Response({"detail": "Account ID required"}, status=status.HTTP_400_BAD_REQUEST)
 
         account = get_object_or_404(MediaProfile, id=account_id)
-
         creek, created = Creek.objects.get_or_create(author=request.user, account=account)
 
         if not created:
@@ -489,16 +605,23 @@ class CreekAccount(APIView):
             return Response({"creek": False}, status=status.HTTP_200_OK)
 
         return Response({"creek": True}, status=status.HTTP_201_CREATED)
-# ---------------------------
-# Upload Video API
-# ---------------------------
-from rest_framework.parsers import MultiPartParser, FormParser
 
+
+# ---------------------------
+# Upload Video API (with spam prevention)
+# ---------------------------
 class UploadVideo(APIView):
     permission_classes = [IsAuthenticated]
-    parser_classes = [MultiPartParser, FormParser]  # ← add this
+    parser_classes = [MultiPartParser, FormParser]
 
     def post(self, request):
+        # Rate limit check
+        if not check_upload_rate_limit(request.user):
+            return Response(
+                {"message": "Upload rate limit reached. Please wait before uploading again."},
+                status=429
+            )
+
         author = request.user
         video_file = request.data.get("video")
         category = request.data.get('category')
@@ -510,8 +633,7 @@ class UploadVideo(APIView):
             return Response({"message": "No video provided"}, status=400)
 
         category_obj, _ = CategoryVideo.objects.get_or_create(
-            name=category,
-            slug=category
+            name=category, slug=category
         )
 
         video_instance = Video.objects.create(
@@ -522,18 +644,50 @@ class UploadVideo(APIView):
             description=description,
             thumbnail=thumbnail,
             timestamp=timezone.now(),
-            is_approved=False
+            is_approved=False,
         )
+
+        record_upload(request.user)
 
         serializer = VideoSerializer(video_instance, context={'request': request})
         return Response(serializer.data, status=201)
+
+
+class StudioComments(APIView):
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request):
+        videos = Video.objects.filter(author=request.user)
+        comments = Comment.objects.filter(video__in=videos).select_related('author', 'video').order_by('-timestamp')
+        data = [{
+            'id': c.id,
+            'text': c.text,
+            'author': c.author.username,
+            'video_id': c.video.id,
+            'video_title': c.video.title,
+            'timestamp': c.timestamp,
+        } for c in comments]
+        return Response(data, status=200)
+
+    def delete(self, request):
+        comment_id = request.query_params.get('id')
+        if not comment_id:
+            return Response({'detail': 'Comment ID required'}, status=400)
+        try:
+            comment = Comment.objects.select_related('video').get(
+                id=comment_id, video__author=request.user
+            )
+            comment.delete()
+            return Response(status=204)
+        except Comment.DoesNotExist:
+            return Response({'detail': 'Comment not found'}, status=404)
+
 
 class Account(APIView):
     permission_classes = [AllowAny]
 
     def post(self, request):
         id = request.data.get("id")
-
         if not id:
             return Response({"error": "ID is required"}, status=400)
 
@@ -553,6 +707,6 @@ class Account(APIView):
         return Response({
             "profile": profile_data,
             "account": MediaProfileSerializer(profile_media).data,
-            "videos": VideoSerializer(videos, many=True).data,
+            "videos": VideoSerializer(videos, many=True, context={'request': request}).data,
             "creek_count": creek_count,
         }, status=200)

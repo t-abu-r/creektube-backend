@@ -6,13 +6,12 @@ from django.utils import timezone
 from rest_framework.test import APIClient
 
 from . import ranking
-from .models import CategoryVideo, Creek, DisPike, Like, MediaProfile, Video
+from .models import (CategoryVideo, Creek, DisPike, Like, MediaProfile,
+                     Video, WatchEvent, UploadRateLimit)
 
 
 def make_video(author, category, hours_old=0, is_approved=True, title="video"):
-    """Helper: create a Video with a backdated timestamp (timestamp is
-    auto_now_add, so we create then patch it directly with .update() to
-    avoid re-triggering auto_now_add)."""
+    """Helper: create a Video with a backdated timestamp."""
     video = Video.objects.create(
         author=author,
         category=category,
@@ -28,9 +27,24 @@ def make_video(author, category, hours_old=0, is_approved=True, title="video"):
     return video
 
 
+def make_watch_event(user, video, hours_ago=0, duration=60, session_id=""):
+    """Helper: create a WatchEvent with a backdated timestamp."""
+    event = WatchEvent.objects.create(
+        user=user,
+        video=video,
+        duration_watched=duration,
+        session_id=session_id or f"session_{user.id}",
+    )
+    if hours_ago:
+        WatchEvent.objects.filter(pk=event.pk).update(
+            timestamp=timezone.now() - timedelta(hours=hours_ago)
+        )
+        event.refresh_from_db()
+    return event
+
+
 # ---------------------------------------------------------------------------
-# Pure-function unit tests for media/ranking.py — no DB required beyond what
-# Django's TestCase sets up by default.
+# Pure-function unit tests for media/ranking.py
 # ---------------------------------------------------------------------------
 class RankingUnitTests(TestCase):
     def test_interest_affinity_empty_interests_returns_exploration_floor(self):
@@ -60,8 +74,6 @@ class RankingUnitTests(TestCase):
         self.assertLess(ranking.engagement_score(1, 10), 0)
 
     def test_engagement_score_is_dampened_not_linear(self):
-        # 100 net likes shouldn't score 10x as high as 10 net likes —
-        # log-dampening should compress the gap.
         low = ranking.engagement_score(10, 0)
         high = ranking.engagement_score(100, 0)
         self.assertGreater(high, low)
@@ -89,10 +101,42 @@ class RankingUnitTests(TestCase):
         result = ranking.adjust_category_score(categories, None, 5)
         self.assertEqual(result, {"gaming": 5})
 
+    def test_cowatch_affinity_empty_returns_zero(self):
+        self.assertEqual(ranking.cowatch_affinity(1, [], {}), 0.0)
+
+    def test_cowatch_affinity_no_match_returns_zero(self):
+        self.assertEqual(ranking.cowatch_affinity(99, [1, 2], {1: 0.5, 2: 0.3}), 0.0)
+
+    def test_cowatch_affinity_with_match_scales_to_one(self):
+        result = ranking.cowatch_affinity(1, [1, 2], {1: 0.8, 2: 0.4})
+        self.assertAlmostEqual(result, 1.0)  # 0.8 / max(0.8, 0.4) = 1.0
+
+    def test_cowatch_affinity_below_max_scales_correctly(self):
+        result = ranking.cowatch_affinity(2, [1, 2], {1: 1.0, 2: 0.5})
+        self.assertAlmostEqual(result, 0.5)
+
+    def test_cowatch_increases_composite_score(self):
+        """A video that co-watches with user history should score higher than one that doesn't."""
+        viewer = User.objects.create_user(username="viewer_cw", password="pw")
+        creator = User.objects.create_user(username="creator_cw", password="pw")
+        gaming = CategoryVideo.objects.create(name="Gaming CW", slug="gaming-cw")
+
+        v1 = make_video(creator, gaming, hours_old=1, title="cowatched")
+        v1.num_likes = v1.num_dislikes = 0
+
+        v2 = make_video(creator, gaming, hours_old=1, title="unrelated")
+        v2.num_likes = v2.num_dislikes = 0
+
+        cowatch_map = {v1.id: 1.0, v2.id: 0.0}
+        interests = {"gaming-cw": 10}
+
+        score1 = ranking.score_video(v1, interests, set(), cowatch_map=cowatch_map, user_recent_video_ids=[1])
+        score2 = ranking.score_video(v2, interests, set(), cowatch_map=cowatch_map, user_recent_video_ids=[1])
+        self.assertGreater(score1, score2)
+
 
 # ---------------------------------------------------------------------------
-# Integration tests exercising real Video/CategoryVideo rows through
-# rank_videos(), so category joins and ordering behave as expected together.
+# Integration tests
 # ---------------------------------------------------------------------------
 class RankVideosIntegrationTests(TestCase):
     def setUp(self):
@@ -126,10 +170,6 @@ class RankVideosIntegrationTests(TestCase):
         fresh_viral = make_video(self.creator_b, self.cooking, hours_old=1, title="fresh_viral")
         fresh_viral.num_likes, fresh_viral.num_dislikes = 50, 1
 
-        # Old bucket-based algorithm would always put every "gaming" video
-        # before any "cooking" video for a user whose top interest is
-        # gaming. The new composite score should let a fresh, highly
-        # engaged off-category video surface above a stale favorite.
         interests = {"gaming": 20, "cooking": 1}
         ranked = ranking.rank_videos([old_favorite, fresh_viral], interests, creeked_author_ids=set())
         self.assertEqual(ranked[0].title, "fresh_viral")
@@ -154,14 +194,87 @@ class RankVideosIntegrationTests(TestCase):
 
         ranked = ranking.rank_videos([v1, v2], user_interests={}, creeked_author_ids=set())
         self.assertEqual(len(ranked), 2)
-        # With equal engagement/interest, freshest should win on recency alone.
         self.assertEqual(ranked[0].title, "v1")
+
+    def test_cowatch_related_videos_rank_higher_than_unrelated(self):
+        """Videos watched by same users should rank higher for the feed."""
+        user_c = User.objects.create_user(username="cowatch_user", password="pw")
+        other1 = User.objects.create_user(username="cw_other1", password="pw")
+        other2 = User.objects.create_user(username="cw_other2", password="pw")
+
+        seed = make_video(self.creator_a, self.gaming, hours_old=5, title="seed")
+        related = make_video(self.creator_b, self.gaming, hours_old=3, title="related")
+        unrelated = make_video(self.creator_a, self.gaming, hours_old=1, title="unrelated")
+
+        # Others watched seed + related (co-watch pair)
+        make_watch_event(other1, seed, hours_ago=4)
+        make_watch_event(other1, related, hours_ago=3)
+        make_watch_event(other2, seed, hours_ago=4)
+        make_watch_event(other2, related, hours_ago=3)
+
+        # User watched seed
+        make_watch_event(user_c, seed, hours_ago=2)
+
+        seed.num_likes = seed.num_dislikes = related.num_likes = related.num_dislikes = 0
+        unrelated.num_likes = unrelated.num_dislikes = 0
+
+        user_recent = ranking.get_user_recent_video_ids(user_c)
+        cowatch_map = ranking.build_cowatch_map(user_recent, [related.id, unrelated.id])
+
+        interests = {"gaming": 10}
+        score_related = ranking.score_video(related, interests, set(), cowatch_map=cowatch_map, user_recent_video_ids=user_recent)
+        score_unrelated = ranking.score_video(unrelated, interests, set(), cowatch_map=cowatch_map, user_recent_video_ids=user_recent)
+        self.assertGreater(score_related, score_unrelated)
 
 
 # ---------------------------------------------------------------------------
-# API-level tests: make sure the views actually use the ranking module
-# end-to-end, and that feedback loops (watch/dislike) move category scores
-# the right direction.
+# Co-watch computation tests
+# ---------------------------------------------------------------------------
+class CoWatchComputationTests(TestCase):
+    def setUp(self):
+        self.user1 = User.objects.create_user(username="cw_u1", password="pw")
+        self.user2 = User.objects.create_user(username="cw_u2", password="pw")
+        self.creator = User.objects.create_user(username="cw_creator", password="pw")
+        self.gaming = CategoryVideo.objects.create(name="Gaming CW2", slug="gaming-cw2")
+
+    def test_build_cowatch_map_empty_when_no_history(self):
+        result = ranking.build_cowatch_map([], [1, 2, 3])
+        self.assertEqual(result, {})
+
+    def test_build_cowatch_map_finds_co_watched_videos(self):
+        v1 = make_video(self.creator, self.gaming, title="v1")
+        v2 = make_video(self.creator, self.gaming, title="v2")
+        v3 = make_video(self.creator, self.gaming, title="v3")
+
+        # user1 watched v1 and v2
+        make_watch_event(self.user1, v1, hours_ago=5)
+        make_watch_event(self.user1, v2, hours_ago=4)
+
+        # user2 watched v1 and v2
+        make_watch_event(self.user2, v1, hours_ago=3)
+        make_watch_event(self.user2, v2, hours_ago=2)
+
+        # v3 was never watched with v1
+        make_watch_event(self.user1, v3, hours_ago=1)
+
+        result = ranking.build_cowatch_map([v1.id], [v2.id, v3.id])
+        self.assertIn(v2.id, result)
+        self.assertIn(v3.id, result)
+        # v2 should have higher co-watch score (watched by 2 users with v1)
+        self.assertGreater(result[v2.id], result.get(v3.id, 0))
+
+    def test_cold_start_user_no_history_returns_empty_map(self):
+        result = ranking.build_cowatch_map([], [1, 2])
+        self.assertEqual(result, {})
+
+    def test_cold_start_new_video_no_cowatch_data_returns_zero(self):
+        new_video = make_video(self.creator, self.gaming, title="brand_new")
+        result = ranking.cowatch_affinity(new_video.id, [1, 2, 3], {})
+        self.assertEqual(result, 0.0)
+
+
+# ---------------------------------------------------------------------------
+# API-level tests
 # ---------------------------------------------------------------------------
 class FeedViewTests(TestCase):
     def setUp(self):
@@ -226,11 +339,11 @@ class FeedViewTests(TestCase):
 
     def test_undoing_dislike_restores_category_score(self):
         self.client.force_authenticate(user=self.user)
-        self.client.post("/media/dispikevideo/", {"id": self.video.id})  # dislike
+        self.client.post("/media/dispikevideo/", {"id": self.video.id})
         self.profile.refresh_from_db()
         after_dislike = self.profile.categories.get("gaming")
 
-        resp = self.client.post("/media/dispikevideo/", {"id": self.video.id})  # undo
+        resp = self.client.post("/media/dispikevideo/", {"id": self.video.id})
         self.assertEqual(resp.status_code, 200)
 
         self.profile.refresh_from_db()
@@ -255,3 +368,64 @@ class FeedViewTests(TestCase):
 
         self.profile.refresh_from_db()
         self.assertEqual(self.profile.categories.get("gaming"), ranking.MAX_CATEGORY_SCORE)
+
+    def test_view_count_increments_on_watch(self):
+        self.client.force_authenticate(user=self.user)
+        self.assertEqual(self.video.view_count, 0)
+
+        self.client.post("/media/watchvideo/", {"video_id": self.video.id})
+        self.video.refresh_from_db()
+        self.assertEqual(self.video.view_count, 1)
+
+    def test_view_dedup_prevents_double_counting(self):
+        self.client.force_authenticate(user=self.user)
+
+        self.client.post("/media/watchvideo/", {"video_id": self.video.id})
+        self.client.post("/media/watchvideo/", {"video_id": self.video.id})
+        self.video.refresh_from_db()
+        # Only 1 new view because of dedup (WatchEvent still recorded, but view_count only +1)
+        self.assertEqual(self.video.view_count, 1)
+
+    def test_upload_rate_limit_blocks_spam(self):
+        from .views import check_upload_rate_limit
+        self.client.force_authenticate(user=self.user)
+
+        # Upload 3 videos (the limit)
+        for i in range(3):
+            UploadRateLimit.objects.create(user=self.user)
+
+        self.assertFalse(check_upload_rate_limit(self.user))
+
+    def test_upload_rate_limit_allows_after_window(self):
+        self.client.force_authenticate(user=self.user)
+
+        # Old uploads outside the window
+        for i in range(5):
+            ul = UploadRateLimit.objects.create(user=self.user)
+            UploadRateLimit.objects.filter(pk=ul.pk).update(
+                uploaded_at=timezone.now() - timedelta(hours=2)
+            )
+
+        from .views import check_upload_rate_limit
+        self.assertTrue(check_upload_rate_limit(self.user))
+
+    def test_track_retention_saves_duration(self):
+        self.client.force_authenticate(user=self.user)
+        self.client.post("/media/watchvideo/", {"video_id": self.video.id})
+
+        resp = self.client.post("/media/trackretention/", {
+            "video_id": self.video.id,
+            "duration": 120,
+        })
+        self.assertEqual(resp.status_code, 200)
+
+        event = WatchEvent.objects.filter(user=self.user, video=self.video).first()
+        self.assertIsNotNone(event)
+        self.assertEqual(event.duration_watched, 120)
+
+    def test_video_serializer_includes_view_count(self):
+        self.client.force_authenticate(user=self.user)
+        resp = self.client.get("/media/logingetvideo/")
+        video_data = resp.data["results"][0]
+        self.assertIn("view_count", video_data)
+        self.assertEqual(video_data["view_count"], 0)
