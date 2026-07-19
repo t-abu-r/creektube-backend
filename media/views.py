@@ -83,14 +83,18 @@ class SetInterests(APIView):
     def post(self, request):
         categories = request.data.get("categories")
         if not categories or not isinstance(categories, list):
-            return Response({"detail": "Send a list of categories"}, status=status.HTTP_400_BAD_REQUEST)
+            return Response({"detail": "Send a list of category slugs"}, status=status.HTTP_400_BAD_REQUEST)
 
+        valid_slugs = set(
+            CategoryVideo.objects.values_list("slug", flat=True)
+        )
         for c in categories:
-            if c not in CategoryVideo.values:
-                return Response({"detail": f"Invalid category: {c}"}, status=status.HTTP_400_BAD_REQUEST)
+            if c not in valid_slugs:
+                return Response({"detail": f"Unknown category: {c}"}, status=status.HTTP_400_BAD_REQUEST)
 
-        profile, _ = Profile.objects.get_or_create(user=request.user)
-        profile.categories = {c: profile.categories.get(c, 10) for c in categories}
+        profile, _ = MediaProfile.objects.get_or_create(user=request.user)
+        existing = profile.categories or {}
+        profile.categories = {c: existing.get(c, 10) for c in categories}
         profile.save()
 
         return Response({"detail": "Interests set successfully", "categories": profile.categories})
@@ -215,6 +219,32 @@ class Categories(APIView):
         return Response(serializer.data, status=status.HTTP_200_OK)
 
 
+class CategoryManage(APIView):
+    """Create or delete categories. Only moderators can manage."""
+    permission_classes = [IsAuthenticated, IsModerator]
+
+    def post(self, request):
+        name = request.data.get("name", "").strip()
+        slug = request.data.get("slug", "").strip().lower()
+        if not name or not slug:
+            return Response({"detail": "Name and slug are required"}, status=400)
+        if CategoryVideo.objects.filter(slug=slug).exists():
+            return Response({"detail": "Category with this slug already exists"}, status=400)
+        cat = CategoryVideo.objects.create(name=name, slug=slug)
+        return Response(CategoryVideoSerializer(cat).data, status=201)
+
+    def delete(self, request):
+        cat_id = request.query_params.get("id")
+        if not cat_id:
+            return Response({"detail": "Category ID required"}, status=400)
+        try:
+            cat = CategoryVideo.objects.get(id=cat_id)
+            cat.delete()
+            return Response(status=204)
+        except CategoryVideo.DoesNotExist:
+            return Response({"detail": "Category not found"}, status=404)
+
+
 class Studio(APIView):
     permission_classes = [IsAuthenticated]
     parser_classes = [MultiPartParser, FormParser]
@@ -242,7 +272,10 @@ class Studio(APIView):
             video.video = video_file
             video.is_approved = False
         if category:
-            category_obj, _ = CategoryVideo.objects.get_or_create(name=category, slug=category)
+            category_obj, _ = CategoryVideo.objects.get_or_create(
+                slug=category,
+                defaults={"name": category.replace("-", " ").title()},
+            )
             video.category = category_obj
 
         from burst.admin_mixins import mark_committed
@@ -633,7 +666,8 @@ class UploadVideo(APIView):
             return Response({"message": "No video provided"}, status=400)
 
         category_obj, _ = CategoryVideo.objects.get_or_create(
-            name=category, slug=category
+            slug=category,
+            defaults={"name": category.replace("-", " ").title()},
         )
 
         video_instance = Video.objects.create(

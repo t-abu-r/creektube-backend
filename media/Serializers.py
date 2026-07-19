@@ -71,16 +71,22 @@ class VideoSerializer(serializers.ModelSerializer):
     video = serializers.SerializerMethodField()
     comments = CommentSerializer(many=True, read_only=True)
     category = serializers.SlugRelatedField(slug_field="slug", read_only=True)
+    category_name = serializers.SerializerMethodField()
     author_id = serializers.SerializerMethodField()
     view_count = serializers.IntegerField(read_only=True)
 
     class Meta:
         model = Video
         fields = [
-            "id", "category", "title", "description", "thumbnail", "video",
+            "id", "category", "category_name", "title", "description", "thumbnail", "video",
             "timestamp", "is_approved", "author", "author_id", "author_avatar",
             "comments", "view_count",
         ]
+
+    def get_category_name(self, obj):
+        if obj.category:
+            return obj.category.name
+        return None
 
     def get_author_id(self, obj):
         try:
