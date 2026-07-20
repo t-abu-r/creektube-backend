@@ -57,7 +57,7 @@ def _set_auth_cookies(response, access_token, refresh_token):
         httponly=False,
         secure=cookie_secure,
         samesite=cookie_samesite,
-        max_age=refresh_max_age,
+        max_age=access_max_age,
         path="/",
     )
 
