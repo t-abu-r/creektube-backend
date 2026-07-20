@@ -6,9 +6,23 @@ from .models import *
 
 class MediaProfileSerializer(serializers.ModelSerializer):
     username = serializers.CharField(source='user.username', read_only=True)
+    avatar = serializers.SerializerMethodField()
+
     class Meta:
         model = MediaProfile
-        fields = ["id", "username", "categories", "moderator", "official"]
+        fields = ["id", "username", "categories", "moderator", "official", "avatar"]
+
+    def get_avatar(self, obj):
+        request = self.context.get("request")
+        try:
+            profile = Profile.objects.get(user=obj.user)
+            if profile.avatar:
+                if request:
+                    return request.build_absolute_uri(profile.avatar.url)
+                return profile.avatar.url
+            return None
+        except Profile.DoesNotExist:
+            return None
 
 
 class CategoryVideoSerializer(serializers.ModelSerializer):
@@ -45,11 +59,20 @@ class CreekSerializer(serializers.ModelSerializer):
 
 class CommentSerializer(serializers.ModelSerializer):
     author = serializers.CharField(source="author.username", read_only=True)
+    author_id = serializers.SerializerMethodField()
     author_avatar = serializers.SerializerMethodField()
+    is_pinned = serializers.BooleanField(read_only=True)
+    replies = serializers.SerializerMethodField()
 
     class Meta:
         model = Comment
-        fields = ["id", "author", "author_avatar", "text", "timestamp"]
+        fields = ["id", "author", "author_id", "author_avatar", "text", "timestamp", "is_pinned", "parent", "replies"]
+
+    def get_author_id(self, obj):
+        try:
+            return MediaProfile.objects.get(user=obj.author).id
+        except MediaProfile.DoesNotExist:
+            return None
 
     def get_author_avatar(self, obj):
         request = self.context.get("request")
@@ -62,6 +85,12 @@ class CommentSerializer(serializers.ModelSerializer):
             return None
         except Profile.DoesNotExist:
             return None
+
+    def get_replies(self, obj):
+        if obj.parent is not None:
+            return []
+        replies = obj.replies.all().order_by('timestamp')
+        return CommentSerializer(replies, many=True, context=self.context).data
 
 
 class VideoSerializer(serializers.ModelSerializer):

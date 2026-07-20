@@ -47,6 +47,8 @@ class Comment(models.Model):
     video = models.ForeignKey(Video, related_name="comments", on_delete=models.CASCADE, null=True)
     text = models.TextField(max_length=500)
     timestamp = models.DateTimeField(auto_now_add=True)
+    is_pinned = models.BooleanField(default=False)
+    parent = models.ForeignKey('self', null=True, blank=True, on_delete=models.CASCADE, related_name='replies')
 
 
 class Like(models.Model):
