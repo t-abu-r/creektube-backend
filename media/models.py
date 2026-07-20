@@ -47,8 +47,22 @@ class Comment(models.Model):
     video = models.ForeignKey(Video, related_name="comments", on_delete=models.CASCADE, null=True)
     text = models.TextField(max_length=500)
     timestamp = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True, null=True)
     is_pinned = models.BooleanField(default=False)
+    edited = models.BooleanField(default=False)
     parent = models.ForeignKey('self', null=True, blank=True, on_delete=models.CASCADE, related_name='replies')
+
+
+class CommentLike(models.Model):
+    author = models.ForeignKey(User, on_delete=models.CASCADE)
+    comment = models.ForeignKey(Comment, on_delete=models.CASCADE, related_name='likes')
+    created_at = models.DateTimeField(auto_now_add=True, null=True)
+
+    class Meta:
+        unique_together = ['author', 'comment']
+
+    def __str__(self):
+        return f"{self.author.username} liked comment {self.comment.id}"
 
 
 class Like(models.Model):
@@ -108,3 +122,32 @@ class UploadRateLimit(models.Model):
         indexes = [
             models.Index(fields=['user', 'uploaded_at']),
         ]
+
+
+class Notification(models.Model):
+    NOTIFICATION_TYPES = [
+        ("comment", "New comment on your video"),
+        ("reply", "Reply to your comment"),
+        ("like", "Someone liked your video"),
+        ("subscribe", "New subscriber"),
+        ("mention", "You were mentioned"),
+    ]
+
+    recipient = models.ForeignKey(User, on_delete=models.CASCADE, related_name="notifications")
+    actor = models.ForeignKey(User, on_delete=models.CASCADE, related_name="actor_notifications")
+    verb = models.CharField(max_length=20, choices=NOTIFICATION_TYPES)
+    target_type = models.CharField(max_length=20, blank=True, default="")
+    target_id = models.PositiveIntegerField(null=True, blank=True)
+    extra_data = models.JSONField(default=dict, blank=True)
+    is_read = models.BooleanField(default=False)
+    timestamp = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ["-timestamp"]
+        indexes = [
+            models.Index(fields=["recipient", "-timestamp"]),
+            models.Index(fields=["recipient", "is_read"]),
+        ]
+
+    def __str__(self):
+        return f"{self.actor.username} {self.verb} -> {self.recipient.username}"

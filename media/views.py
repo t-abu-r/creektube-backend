@@ -9,8 +9,8 @@ from django.utils import timezone
 from .permissions import IsModerator
 from .Serializers import *
 from accounts.serializers import ProfileSerializer
-from .models import (Video, Comment, CategoryVideo, MediaProfile, Like,
-                     DisPike, Creek, WatchEvent, UploadRateLimit)
+from .models import (Video, Comment, CommentLike, CategoryVideo, MediaProfile, Like,
+                     DisPike, Creek, WatchEvent, UploadRateLimit, Notification)
 from django.db.models import Count, Q
 from . import ranking
 from django.views.decorators.csrf import csrf_exempt
@@ -25,6 +25,8 @@ from datetime import timedelta
 UPLOAD_RATE_LIMIT = 3  # max uploads per hour
 UPLOAD_RATE_WINDOW = timedelta(hours=1)
 VIEW_DEDUP_WINDOW = timedelta(minutes=30)
+COMMENT_SPAM_LIMIT = 6  # max comments per video
+COMMENT_SPAM_WINDOW = timedelta(minutes=2)
 
 
 def check_upload_rate_limit(user):
@@ -72,6 +74,15 @@ def get_or_create_session_id(user):
         return last_event.session_id
     import uuid
     return uuid.uuid4().hex[:16]
+
+
+def check_comment_spam(user, video):
+    """Returns True if user is under limit, False if spam detected."""
+    cutoff = timezone.now() - COMMENT_SPAM_WINDOW
+    recent = Comment.objects.filter(
+        author=user, video=video, timestamp__gte=cutoff
+    ).count()
+    return recent < COMMENT_SPAM_LIMIT
 
 
 # ---------------------------
@@ -588,6 +599,13 @@ class UploadCommentVideo(APIView):
 
         video = get_object_or_404(Video, id=video_id)
 
+        # Spam check
+        if not check_comment_spam(author, video):
+            return Response(
+                {'message': 'You are posting too many comments. Please wait before posting again.'},
+                status=status.HTTP_429_TOO_MANY_REQUESTS
+            )
+
         parent = None
         if parent_id:
             parent = get_object_or_404(Comment, id=parent_id, video=video)
@@ -785,3 +803,127 @@ class Account(APIView):
             "videos": VideoSerializer(videos, many=True, context={'request': request}).data,
             "creek_count": creek_count,
         }, status=200)
+
+
+class NotificationList(APIView):
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request):
+        limit = request.query_params.get("limit", 50)
+        try:
+            limit = min(int(limit), 100)
+        except (TypeError, ValueError):
+            limit = 50
+
+        notifications = Notification.objects.filter(recipient=request.user)[:limit]
+        serializer = NotificationSerializer(notifications, many=True, context={'request': request})
+        return Response(serializer.data, status=status.HTTP_200_OK)
+
+
+class NotificationUnreadCount(APIView):
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request):
+        count = Notification.objects.filter(recipient=request.user, is_read=False).count()
+        return Response({"count": count}, status=status.HTTP_200_OK)
+
+
+class NotificationMarkRead(APIView):
+    permission_classes = [IsAuthenticated]
+
+    def post(self, request):
+        notification_id = request.data.get("id")
+        if notification_id:
+            Notification.objects.filter(id=notification_id, recipient=request.user).update(is_read=True)
+        return Response({"status": "ok"}, status=status.HTTP_200_OK)
+
+
+class NotificationMarkAllRead(APIView):
+    permission_classes = [IsAuthenticated]
+
+    def post(self, request):
+        Notification.objects.filter(recipient=request.user, is_read=False).update(is_read=True)
+        return Response({"status": "ok"}, status=status.HTTP_200_OK)
+
+
+@method_decorator(csrf_exempt, name='dispatch')
+class CommentLikeToggle(APIView):
+    permission_classes = [IsAuthenticated]
+
+    def post(self, request):
+        comment_id = request.data.get("comment_id")
+        if not comment_id:
+            return Response({"detail": "Comment ID required"}, status=status.HTTP_400_BAD_REQUEST)
+
+        comment = get_object_or_404(Comment, id=comment_id)
+        like, created = CommentLike.objects.get_or_create(author=request.user, comment=comment)
+
+        if not created:
+            like.delete()
+            return Response({"liked": False, "likes_count": comment.likes.count()}, status=status.HTTP_200_OK)
+
+        return Response({"liked": True, "likes_count": comment.likes.count()}, status=status.HTTP_201_CREATED)
+
+
+@method_decorator(csrf_exempt, name='dispatch')
+class CommentEdit(APIView):
+    permission_classes = [IsAuthenticated]
+
+    def patch(self, request):
+        comment_id = request.data.get("comment_id")
+        new_text = request.data.get("text")
+
+        if not comment_id or not new_text:
+            return Response({"detail": "Comment ID and text required"}, status=status.HTTP_400_BAD_REQUEST)
+
+        comment = get_object_or_404(Comment, id=comment_id, author=request.user)
+        comment.text = new_text
+        comment.edited = True
+        comment.save(update_fields=['text', 'edited'])
+
+        return Response({
+            'message': 'Comment updated',
+            'comment': CommentSerializer(comment, context={'request': request}).data
+        }, status=status.HTTP_200_OK)
+
+
+@method_decorator(csrf_exempt, name='dispatch')
+class CommentDelete(APIView):
+    permission_classes = [IsAuthenticated]
+
+    def delete(self, request, comment_id):
+        comment = get_object_or_404(Comment, id=comment_id, author=request.user)
+        comment.delete()
+        return Response(status=status.HTTP_204_NO_CONTENT)
+
+
+class UserSettings(APIView):
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request):
+        profile, _ = Profile.objects.get_or_create(user=request.user)
+        return Response({
+            "username": request.user.username,
+            "email": request.user.email,
+            "bio": profile.bio or "",
+            "avatar": request.build_absolute_uri(profile.avatar.url) if profile.avatar else None,
+            "notification_reply": profile.notification_reply,
+        }, status=status.HTTP_200_OK)
+
+    def put(self, request):
+        profile, _ = Profile.objects.get_or_create(user=request.user)
+
+        bio = request.data.get("bio")
+        if bio is not None:
+            profile.bio = bio
+
+        notification_reply = request.data.get("notification_reply")
+        if notification_reply is not None:
+            profile.notification_reply = bool(notification_reply)
+
+        profile.save(update_fields=['bio', 'notification_reply'])
+
+        return Response({
+            "message": "Settings updated",
+            "notification_reply": profile.notification_reply,
+        }, status=status.HTTP_200_OK)

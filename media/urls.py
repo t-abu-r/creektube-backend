@@ -25,4 +25,12 @@ urlpatterns = [
     path("studio/comments/", StudioComments.as_view(), name="StudioComments"),
     path("account/", Account.as_view(), name="GetAccount"),
     path("trackretention/", TrackRetention.as_view(), name="TrackRetention"),
+    path("notifications/unread-count/", NotificationUnreadCount.as_view(), name="NotificationUnreadCount"),
+    path("notifications/mark-read/", NotificationMarkRead.as_view(), name="NotificationMarkRead"),
+    path("notifications/mark-all-read/", NotificationMarkAllRead.as_view(), name="NotificationMarkAllRead"),
+    path("notifications/", NotificationList.as_view(), name="NotificationList"),
+    path("comment-like/", CommentLikeToggle.as_view(), name="CommentLikeToggle"),
+    path("comment-edit/", CommentEdit.as_view(), name="CommentEdit"),
+    path("comment-delete/<int:comment_id>/", CommentDelete.as_view(), name="CommentDelete"),
+    path("settings/", UserSettings.as_view(), name="UserSettings"),
 ]

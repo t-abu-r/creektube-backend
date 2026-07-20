@@ -63,10 +63,15 @@ class CommentSerializer(serializers.ModelSerializer):
     author_avatar = serializers.SerializerMethodField()
     is_pinned = serializers.BooleanField(read_only=True)
     replies = serializers.SerializerMethodField()
+    edited = serializers.BooleanField(read_only=True)
+    likes_count = serializers.SerializerMethodField()
+    is_liked = serializers.SerializerMethodField()
 
     class Meta:
         model = Comment
-        fields = ["id", "author", "author_id", "author_avatar", "text", "timestamp", "is_pinned", "parent", "replies"]
+        fields = ["id", "author", "author_id", "author_avatar", "text", "timestamp",
+                  "updated_at", "is_pinned", "edited", "parent", "replies",
+                  "likes_count", "is_liked"]
 
     def get_author_id(self, obj):
         try:
@@ -91,6 +96,15 @@ class CommentSerializer(serializers.ModelSerializer):
             return []
         replies = obj.replies.all().order_by('timestamp')
         return CommentSerializer(replies, many=True, context=self.context).data
+
+    def get_likes_count(self, obj):
+        return obj.likes.count()
+
+    def get_is_liked(self, obj):
+        request = self.context.get("request")
+        if request and request.user.is_authenticated:
+            return obj.likes.filter(author=request.user).exists()
+        return False
 
 
 class VideoSerializer(serializers.ModelSerializer):
@@ -156,3 +170,38 @@ class VideoSerializer(serializers.ModelSerializer):
         except Exception:
             pass
         return None
+
+
+class NotificationSerializer(serializers.ModelSerializer):
+    actor_name = serializers.CharField(source="actor.username", read_only=True)
+    actor_avatar = serializers.SerializerMethodField()
+    time_ago = serializers.SerializerMethodField()
+
+    class Meta:
+        model = Notification
+        fields = ["id", "recipient", "actor", "actor_name", "actor_avatar", "verb",
+                  "target_type", "target_id", "extra_data", "is_read", "timestamp", "time_ago"]
+
+    def get_actor_avatar(self, obj):
+        request = self.context.get("request")
+        try:
+            profile = Profile.objects.get(user=obj.actor)
+            if profile.avatar:
+                if request:
+                    return request.build_absolute_uri(profile.avatar.url)
+                return profile.avatar.url
+            return None
+        except Profile.DoesNotExist:
+            return None
+
+    def get_time_ago(self, obj):
+        from django.utils import timezone
+        now = timezone.now()
+        diff = now - obj.timestamp
+        if diff.days > 0:
+            return f"{diff.days}d ago"
+        if diff.seconds >= 3600:
+            return f"{diff.seconds // 3600}h ago"
+        if diff.seconds >= 60:
+            return f"{diff.seconds // 60}m ago"
+        return "Just now"

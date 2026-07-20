@@ -25,6 +25,7 @@ class Profile(models.Model):
         default=PlanChoices.FREE
     )
     is_verified = models.BooleanField(default=False)
+    notification_reply = models.BooleanField(default=True)
 
     def __str__(self):
         return f"{self.user.username} - {self.get_plan_display()}"
