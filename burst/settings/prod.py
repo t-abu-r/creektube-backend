@@ -41,6 +41,8 @@ CORS_ALLOWED_ORIGINS = [origin for origin in [
     *os.environ.get('ADDITIONAL_CORS_ORIGINS', '').split(','),
 ] if origin]
 
+CORS_ALLOW_CREDENTIALS = True
+
 CORS_ALLOWED_ORIGIN_REGEXES = [
     r"^https://.*\.vercel\.app$",
     r"^https://.*\.pythonanywhere\.com$",

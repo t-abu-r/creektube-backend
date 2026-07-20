@@ -21,7 +21,52 @@ from django.utils.http import urlsafe_base64_encode, urlsafe_base64_decode
 from urllib.parse import unquote
 from media.models import MediaProfile
 from media.Serializers import MediaProfileSerializer
+import os
+from datetime import timedelta
 # from cloudinary.utils import cloudinary_url  # Commented out - using local storage
+
+
+def _set_auth_cookies(response, access_token, refresh_token):
+    """Set httpOnly cookies for access and refresh tokens."""
+    production = not settings.DEBUG
+    cookie_secure = production
+    cookie_samesite = "None" if production else "Lax"
+    access_max_age = int(os.environ.get("JWT_ACCESS_TOKEN_LIFETIME_MINUTES", 15)) * 60
+    refresh_max_age = int(os.environ.get("JWT_REFRESH_TOKEN_LIFETIME_DAYS", 30)) * 86400
+    response.set_cookie(
+        key="access_token",
+        value=access_token,
+        httponly=True,
+        secure=cookie_secure,
+        samesite=cookie_samesite,
+        max_age=access_max_age,
+        path="/",
+    )
+    response.set_cookie(
+        key="refresh_token",
+        value=refresh_token,
+        httponly=True,
+        secure=cookie_secure,
+        samesite=cookie_samesite,
+        max_age=refresh_max_age,
+        path="/",
+    )
+    response.set_cookie(
+        key="authenticated",
+        value="true",
+        httponly=False,
+        secure=cookie_secure,
+        samesite=cookie_samesite,
+        max_age=refresh_max_age,
+        path="/",
+    )
+
+
+def _clear_auth_cookies(response):
+    """Clear auth cookies."""
+    response.delete_cookie("access_token", path="/")
+    response.delete_cookie("refresh_token", path="/")
+    response.delete_cookie("authenticated", path="/")
 
 class VerifyEmailView(APIView):
     def get(self, request, uidb64, token):
@@ -267,3 +312,82 @@ class CheckUserInfo(APIView):
             "plan": user_profile.get_plan_display(),
             "avatar": avatar
         })
+
+
+# ---------------------------
+# Cookie-based JWT Auth Views
+# ---------------------------
+
+class CookieTokenLoginView(APIView):
+    permission_classes = [AllowAny]
+
+    def post(self, request):
+        email = request.data.get("email")
+        username = request.data.get("username")
+        password = request.data.get("password")
+
+        if not email or not username or not password:
+            return Response({"error": "All fields are required"}, status=400)
+
+        try:
+            user_obj = User.objects.get(email=email, username=username)
+        except User.DoesNotExist:
+            return Response({"error": "Email or username or password is incorrect"}, status=400)
+
+        user = authenticate(username=username, password=password)
+        if user is None:
+            return Response({"error": "Invalid credentials"}, status=400)
+
+        if not user.is_active:
+            user.is_active = True
+            user.save()
+
+        MediaProfile.objects.get_or_create(user=user)
+
+        refresh = RefreshToken.for_user(user)
+        access_token = str(refresh.access_token)
+        refresh_token = str(refresh)
+
+        response = Response({
+            "access": access_token,
+            "detail": "Login successful",
+        })
+        _set_auth_cookies(response, access_token, refresh_token)
+        return response
+
+
+class CookieTokenRefreshView(APIView):
+    permission_classes = [AllowAny]
+
+    def post(self, request):
+        refresh_token = request.COOKIES.get("refresh_token") or request.data.get("refresh")
+        if not refresh_token:
+            return Response({"error": "Refresh token not found"}, status=401)
+
+        try:
+            refresh = RefreshToken(refresh_token)
+            new_access = str(refresh.access_token)
+            new_refresh = str(refresh)
+            refresh.blacklist()
+
+            response = Response({"access": new_access, "detail": "Token refreshed"})
+            _set_auth_cookies(response, new_access, new_refresh)
+            return response
+        except Exception:
+            return Response({"error": "Invalid or expired refresh token"}, status=401)
+
+
+class CookieTokenLogoutView(APIView):
+    permission_classes = [AllowAny]
+
+    def post(self, request):
+        refresh_token = request.COOKIES.get("refresh_token") or request.data.get("refresh")
+        if refresh_token:
+            try:
+                token = RefreshToken(refresh_token)
+                token.blacklist()
+            except Exception:
+                pass
+        response = Response({"detail": "Logged out successfully"}, status=205)
+        _clear_auth_cookies(response)
+        return response
