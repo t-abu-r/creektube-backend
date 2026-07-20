@@ -482,7 +482,6 @@ class SearchVideo(APIView):
 
     def get(self, request):
         title = request.query_params.get("q")
-
         if not title:
             return Response(
                 {"detail": "Title not provided"},
@@ -492,9 +491,34 @@ class SearchVideo(APIView):
         videos = Video.objects.filter(
             Q(title__icontains=title) |
             Q(description__icontains=title)
-        ).order_by("-id")[:10]
+        ).order_by("-id")[:20]
 
-        serializer = VideoSerializer(videos, many=True, context={'request': request})
+        users = MediaProfile.objects.filter(
+            Q(user__username__icontains=title)
+        ).select_related('user')[:10]
+
+        video_serializer = VideoSerializer(videos, many=True, context={'request': request})
+        user_serializer = MediaProfileSerializer(users, many=True, context={'request': request})
+
+        return Response({
+            "videos": video_serializer.data,
+            "users": user_serializer.data,
+        }, status=status.HTTP_200_OK)
+
+
+class SearchUsers(APIView):
+    permission_classes = [AllowAny]
+
+    def get(self, request):
+        q = request.query_params.get("q", "").strip()
+        if not q:
+            return Response([], status=status.HTTP_200_OK)
+
+        users = MediaProfile.objects.filter(
+            Q(user__username__icontains=q)
+        ).select_related('user')[:8]
+
+        serializer = MediaProfileSerializer(users, many=True, context={'request': request})
         return Response(serializer.data, status=status.HTTP_200_OK)
 
 
@@ -543,14 +567,10 @@ class CommentVideo(APIView):
             return Response({'message': 'No video ID provided'}, status=status.HTTP_400_BAD_REQUEST)
 
         video = get_object_or_404(Video, id=video_id)
-        comments = Comment.objects.filter(video=video).order_by('timestamp')
+        top_level = Comment.objects.filter(video=video, parent=None).select_related('author').order_by('-is_pinned', '-timestamp')
 
-        return Response([{
-            'id': c.id,
-            'text': c.text,
-            'author': c.author.username,
-            'timestamp': c.timestamp
-        } for c in comments], status=status.HTTP_200_OK)
+        serializer = CommentSerializer(top_level, many=True, context={'request': request})
+        return Response(serializer.data, status=status.HTTP_200_OK)
 
 
 @method_decorator(csrf_exempt, name='dispatch')
@@ -561,22 +581,22 @@ class UploadCommentVideo(APIView):
         author = request.user
         comment_text = request.data.get('comment')
         video_id = request.data.get('video_id')
+        parent_id = request.data.get('parent_id')
 
         if not comment_text:
             return Response({'message': 'No comment provided'}, status=status.HTTP_400_BAD_REQUEST)
 
         video = get_object_or_404(Video, id=video_id)
-        comment = Comment.objects.create(author=author, video=video, text=comment_text)
+
+        parent = None
+        if parent_id:
+            parent = get_object_or_404(Comment, id=parent_id, video=video)
+
+        comment = Comment.objects.create(author=author, video=video, text=comment_text, parent=parent)
 
         return Response({
             'message': 'Comment added successfully',
-            'comment': {
-                'id': comment.id,
-                'text': comment.text,
-                'author': author.username,
-                'video_id': video.id,
-                'timestamp': comment.timestamp
-            }
+            'comment': CommentSerializer(comment, context={'request': request}).data
         }, status=status.HTTP_201_CREATED)
 
 
@@ -596,6 +616,26 @@ class PikeVideo(APIView):
             return Response({"liked": False}, status=status.HTTP_200_OK)
 
         return Response({"liked": True}, status=status.HTTP_201_CREATED)
+
+
+@method_decorator(csrf_exempt, name='dispatch')
+class PinComment(APIView):
+    permission_classes = [IsAuthenticated]
+
+    def post(self, request):
+        comment_id = request.data.get("comment_id")
+        if not comment_id:
+            return Response({"detail": "Comment ID required"}, status=status.HTTP_400_BAD_REQUEST)
+
+        comment = get_object_or_404(Comment, id=comment_id)
+
+        if comment.video.author != request.user:
+            return Response({"detail": "Only the video author can pin comments"}, status=status.HTTP_403_FORBIDDEN)
+
+        comment.is_pinned = not comment.is_pinned
+        comment.save(update_fields=['is_pinned'])
+
+        return Response({"is_pinned": comment.is_pinned}, status=status.HTTP_200_OK)
 
 
 class DisPikeVideo(APIView):
@@ -700,6 +740,7 @@ class StudioComments(APIView):
             'video_id': c.video.id,
             'video_title': c.video.title,
             'timestamp': c.timestamp,
+            'is_pinned': c.is_pinned,
         } for c in comments]
         return Response(data, status=200)
 
