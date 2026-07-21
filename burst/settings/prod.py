@@ -1,20 +1,11 @@
 """
 Production settings for burst project.
 """
-# ASGI_APPLICATION = None
 
 import os
 from .base import *
 import dj_database_url
 
-# Remove daphne (ASGI server) for PythonAnywhere WSGI deployment
-INSTALLED_APPS = [app for app in INSTALLED_APPS if app != 'daphne']
-
-# Remove channels-related apps for WSGI deployment (PythonAnywhere doesn't support WebSockets)
-INSTALLED_APPS = [app for app in INSTALLED_APPS if app not in ['channels', 'channels_redis']]
-
-# Remove directchat app since it depends on channels
-INSTALLED_APPS = [app for app in INSTALLED_APPS if app != 'directchat']
 INSTALLED_APPS = INSTALLED_APPS + ['cloudinary_storage']
 
 STORAGES = {
@@ -26,8 +17,6 @@ STORAGES = {
     },
 }
 WHITENOISE_USE_FINDERS = True
-# Remove channel layers configuration since channels is not installed
-CHANNEL_LAYERS = None
 
 DEBUG = False
 
