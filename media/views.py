@@ -289,9 +289,6 @@ class Studio(APIView):
             )
             video.category = category_obj
 
-        from burst.admin_mixins import mark_committed
-        unchanged = [f for f in ['thumbnail_url', 'video_url'] if not request.data.get(f)]
-        mark_committed(video, unchanged)
         video.save()
         return Response(VideoSerializer(video, context={'request': request}).data, status=200)
 
