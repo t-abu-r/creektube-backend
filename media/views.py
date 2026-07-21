@@ -542,16 +542,34 @@ class ModPanel(APIView):
 
     def get(self, request):
         unapproved_videos = Video.objects.filter(is_approved=False)
-        serializer = VideoSerializer(unapproved_videos, many=True, context={'request': request})
-        return Response(serializer.data, status=status.HTTP_200_OK)
+        unapproved_snips = Snip.objects.filter(is_approved=False)
+        video_serializer = VideoSerializer(unapproved_videos, many=True, context={'request': request})
+        snip_serializer = SnipSerializer(unapproved_snips, many=True, context={'request': request})
+        return Response({
+            "videos": video_serializer.data,
+            "snips": snip_serializer.data
+        }, status=status.HTTP_200_OK)
 
     def post(self, request):
         video_id = request.data.get("id")
         if not video_id:
             return Response({"detail": "Video ID not provided"}, status=status.HTTP_400_BAD_REQUEST)
-        video = get_object_or_404(Video, id=video_id)
-        video.is_approved = not video.is_approved
-        video.save()
+        try:
+            video = Video.objects.get(id=video_id)
+            video.is_approved = not video.is_approved
+            video.save()
+        except:
+            snips = Snip.objects.filter(id=video_id)
+            if snips.exists():
+                video = snips.first()
+                video.is_approved = not video.is_approved
+                video.save()
+                snip_serializer = SnipSerializer(video, context={'request': request})
+                return Response(snip_serializer.data, status=status.HTTP_200_OK)
+            else:
+                return Response({"detail": "Video not found"}, status=status.HTTP_404_NOT_FOUND)
+        # video = get_object_or_404(Video, id=video_id)
+        
         serializer = VideoSerializer(video, context={'request': request})
         return Response(serializer.data, status=status.HTTP_200_OK)
 
@@ -559,7 +577,16 @@ class ModPanel(APIView):
         video_id = request.data.get("id")
         if not video_id:
             return Response({"detail": "Video ID not provided"}, status=status.HTTP_400_BAD_REQUEST)
-        video = get_object_or_404(Video, id=video_id)
+        try:
+            video = Video.objects.get(id=video_id)
+        except Video.DoesNotExist:
+            snips = Snip.objects.filter(id=video_id)
+            if snips.exists():
+                video = snips.first()
+                video.delete()
+                return Response({"detail": "Snip deleted"}, status=status.HTTP_204_NO_CONTENT)
+            else:
+                return Response({"detail": "Video not found"}, status=status.HTTP_404_NOT_FOUND)
         video.delete()
         return Response({"detail": "Video deleted"}, status=status.HTTP_204_NO_CONTENT)
 

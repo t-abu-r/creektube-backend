@@ -203,8 +203,56 @@ class VideoSerializer(serializers.ModelSerializer):
         except Exception:
             pass
         return None
+class SnipSerializer(serializers.ModelSerializer):
+    author = serializers.CharField(source="author.username", read_only=True)
+    author_avatar = serializers.SerializerMethodField()
+    # thumbnail = serializers.SerializerMethodField()
+    video = serializers.SerializerMethodField()
+    comments = CommentSerializer(many=True, read_only=True)
+    category = serializers.SlugRelatedField(slug_field="slug", read_only=True)
+    category_name = serializers.SerializerMethodField()
+    author_id = serializers.SerializerMethodField()
+    view_count = serializers.IntegerField(read_only=True)
 
+    class Meta:
+        model = Snip
+        fields = [
+            "id", "category", "category_name", "title", "description", "video",
+            "timestamp", "is_approved", "author", "author_id", "author_avatar",
+            "comments", "view_count",
+        ]
+    def get_category_name(self, obj):
+        if obj.category:
+            return obj.category.name
+        return None
 
+    def get_author_id(self, obj):
+        try:
+            return MediaProfile.objects.get(user=obj.author).id
+        except MediaProfile.DoesNotExist:
+            return None
+
+    def get_video(self, obj):
+        if not obj.video:
+            return None
+        return obj.video 
+
+    # def get_thumbnail(self, obj):
+    #     if not obj.thumbnail:
+    #         return None
+    #     return obj.thumbnail
+
+    def get_author_avatar(self, obj):
+        try:
+            profile = getattr(obj.author, "profile", None)
+            if profile and profile.avatar:
+                url = profile.avatar.url
+                if url.startswith("http"):
+                    return url
+                return url.lstrip('/')
+        except Exception:
+            pass
+        return None
 class NotificationSerializer(serializers.ModelSerializer):
     actor_name = serializers.CharField(source="actor.username", read_only=True)
     actor_avatar = serializers.SerializerMethodField()
