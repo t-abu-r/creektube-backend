@@ -32,8 +32,8 @@ class Video(models.Model):
     )
     title = models.CharField(max_length=100)
     description = models.TextField()
-    thumbnail = models.ImageField(upload_to='thumbnails/', null=True, blank=True)
-    video = CloudinaryField('video', resource_type='video', null=True, blank=True)
+    thumbnail = models.TextField()  # Assuming this is a URL or path to the thumbnail file
+    video = models.TextField()  # Assuming this is a URL or path to the video file
     timestamp = models.DateTimeField(auto_now_add=True)
     is_approved = models.BooleanField(default=False)
     view_count = models.PositiveIntegerField(default=0)
