@@ -323,17 +323,17 @@ class CookieTokenLoginView(APIView):
     permission_classes = [AllowAny]
 
     def post(self, request):
-        email = request.data.get("email")
+        # email = request.data.get("email")
         username = request.data.get("username")
         password = request.data.get("password")
 
-        if not email or not username or not password:
+        if not username or not password:
             return Response({"error": "All fields are required"}, status=400)
 
         try:
-            user_obj = User.objects.get(email=email, username=username)
+            user_obj = User.objects.get(username=username)
         except User.DoesNotExist:
-            return Response({"error": "Email or username or password is incorrect"}, status=400)
+            return Response({"error": "Username or password is incorrect"}, status=400)
 
         user = authenticate(username=username, password=password)
         if user is None:
