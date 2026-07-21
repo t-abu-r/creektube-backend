@@ -64,9 +64,10 @@ def _set_auth_cookies(response, access_token, refresh_token):
 
 def _clear_auth_cookies(response):
     """Clear auth cookies."""
-    response.delete_cookie("access_token", path="/")
-    response.delete_cookie("refresh_token", path="/")
-    response.delete_cookie("authenticated", path="/")
+    production = not settings.DEBUG
+    response.delete_cookie("access_token", path="/", samesite="None" if production else "Lax", secure=production)
+    response.delete_cookie("refresh_token", path="/", samesite="None" if production else "Lax", secure=production)
+    response.delete_cookie("authenticated", path="/", samesite="None" if production else "Lax", secure=production)
 
 class VerifyEmailView(APIView):
     def get(self, request, uidb64, token):
