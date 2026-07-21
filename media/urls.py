@@ -19,6 +19,7 @@ urlpatterns = [
     path("categories/manage/", CategoryManage.as_view(), name="CategoryManage"),
     path("comment/", CommentVideo.as_view(), name="CommentVideo"),
     path("pincomment/", PinComment.as_view(), name="PinComment"),
+    # MOD PANEL
     path("mod-panel/", ModPanel.as_view()),
     path("getmod/", IfModerator.as_view(), name="GetMod"),
     path("searchvideo/", SearchVideo.as_view(), name="SearchVideo"),
