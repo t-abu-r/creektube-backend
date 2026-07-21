@@ -15,7 +15,7 @@ from django.db.models import Count, Q
 from . import ranking
 from django.views.decorators.csrf import csrf_exempt
 from django.utils.decorators import method_decorator
-from rest_framework.parsers import MultiPartParser, FormParser
+from rest_framework.parsers import MultiPartParser, FormParser, JSONParser
 from datetime import timedelta
 
 
@@ -258,7 +258,7 @@ class CategoryManage(APIView):
 
 class Studio(APIView):
     permission_classes = [IsAuthenticated]
-    parser_classes = [MultiPartParser, FormParser]
+    parser_classes = [MultiPartParser, FormParser, JSONParser]
 
     def patch(self, request):
         video_id = request.data.get("id")
@@ -700,7 +700,7 @@ class CreekAccount(APIView):
 # ---------------------------
 class UploadVideo(APIView):
     permission_classes = [IsAuthenticated]
-    parser_classes = [MultiPartParser, FormParser]
+    parser_classes = [MultiPartParser, FormParser, JSONParser]
 
     def post(self, request):
         # Rate limit check
