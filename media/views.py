@@ -1005,6 +1005,21 @@ class UploadSnip(APIView):
 
         record_upload(request.user)
         serializer = SnipSerializer(snip, context={"request": request})
+
+        try:
+            from channels.layers import get_channel_layer
+            from asgiref.sync import async_to_sync
+            channel_layer = get_channel_layer()
+            async_to_sync(channel_layer.group_send)(
+                "snips_feed",
+                {
+                    "type": "new_snip",
+                    "snip": serializer.data,
+                },
+            )
+        except Exception:
+            pass
+
         return Response(serializer.data, status=201)
 
 

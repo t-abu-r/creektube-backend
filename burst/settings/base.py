@@ -12,12 +12,14 @@ BASE_DIR = Path(__file__).resolve().parent.parent.parent
 
 # Application definition
 INSTALLED_APPS = [
+    'daphne',
     'django.contrib.admin',
     'django.contrib.auth',
     'django.contrib.contenttypes',
     'django.contrib.sessions',
     'django.contrib.messages',
     'django.contrib.staticfiles',
+    'channels',
     'corsheaders',
     'rest_framework',
     'accounts',
@@ -57,7 +59,7 @@ TEMPLATES = [
 ]
 
 WSGI_APPLICATION = 'burst.wsgi.application'
-# ASGI_APPLICATION = 'burst.asgi.application'
+ASGI_APPLICATION = 'burst.asgi.application'
 
 # Channels configuration
 CHANNEL_LAYERS = {

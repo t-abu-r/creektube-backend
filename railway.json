@@ -3,7 +3,7 @@
     "builder": "NIXPACKS"
   },
   "deploy": {
-    "startCommand": "python manage.py makemigrations && python manage.py migrate && gunicorn burst.wsgi:application --workers 4",
+    "startCommand": "python manage.py makemigrations && python manage.py migrate && daphne burst.asgi:application",
     "restartPolicyType": "ON_FAILURE"
   }
 }
