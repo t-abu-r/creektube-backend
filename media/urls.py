@@ -6,6 +6,7 @@ urlpatterns = [
     path("guestgetvideo/", GuestGetVideo.as_view(), name="GuestGetVideo"),
     path("watchvideo/", LoginWatchVideo.as_view(), name="WatchVideo"),
     path("guestwatchvideo/", GuestWatchVideo.as_view(), name="GuestWatchVideo"),
+    # VIDEO UPLOAD!!!!
     path("getownvideo/", GetOwnVideo.as_view(), name="GetOwnVideo"),
     path("uploadvideo/", UploadVideo.as_view(), name="UploadVideo"),
     path("uploadcommentvideo/", UploadCommentVideo.as_view(), name="UploadCommentVideo"),

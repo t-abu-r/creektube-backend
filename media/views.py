@@ -714,7 +714,20 @@ class UploadVideo(APIView):
             )
 
         author = request.user
-        video_file = request.data.get("video")
+        video_url = request.data.get("video_url")
+        video_public_id = request.data.get("video_public_id")
+        thumbnail_url = request.data.get("thumbnail_url")
+        thumbnail_public_id = request.data.get("thumbnail_public_id")
+
+        if video_url and video_public_id and thumbnail_url and thumbnail_public_id:
+            video_file = video_url
+            thumbnail_file = thumbnail_url
+        else:
+            video_file = request.data.get("video")
+            thumbnail_file = request.data.get("thumbnail")
+
+        if not video_file:
+            return Response({"message": "No video provided"}, status=400)
         category = request.data.get('category')
         title = request.data.get("title")
         description = request.data.get("description")
