@@ -686,6 +686,10 @@ class CreekAccount(APIView):
             return Response({"detail": "Account ID required"}, status=status.HTTP_400_BAD_REQUEST)
 
         account = get_object_or_404(MediaProfile, id=account_id)
+
+        if account.user == request.user:
+            return Response({"detail": "You cannot creek your own channel"}, status=status.HTTP_400_BAD_REQUEST)
+
         creek, created = Creek.objects.get_or_create(author=request.user, account=account)
 
         if not created:
@@ -798,6 +802,11 @@ class Account(APIView):
 
         videos = Video.objects.filter(author=profile_media.user, is_approved=True)
         creek_count = Creek.objects.filter(account=profile_media).count()
+
+        is_creeked = False
+        if request.user.is_authenticated:
+            is_creeked = Creek.objects.filter(author=request.user, account=profile_media).exists()
+
         try:
             user_profile = Profile.objects.get(user=profile_media.user)
             profile_data = ProfileSerializer(user_profile, context={"request": request}).data
@@ -809,6 +818,7 @@ class Account(APIView):
             "account": MediaProfileSerializer(profile_media).data,
             "videos": VideoSerializer(videos, many=True, context={'request': request}).data,
             "creek_count": creek_count,
+            "creek": is_creeked,
         }, status=200)
 
 
