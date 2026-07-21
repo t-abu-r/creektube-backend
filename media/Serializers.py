@@ -107,6 +107,51 @@ class CommentSerializer(serializers.ModelSerializer):
         return False
 
 
+class SnipSerializer(serializers.ModelSerializer):
+    author = serializers.CharField(source="author.username", read_only=True)
+    author_id = serializers.SerializerMethodField()
+    author_avatar = serializers.SerializerMethodField()
+    video = serializers.SerializerMethodField()
+    is_liked = serializers.SerializerMethodField()
+
+    class Meta:
+        model = Snip
+        fields = [
+            "id", "title", "description", "video", "timestamp",
+            "is_approved", "author", "author_id", "author_avatar",
+            "view_count", "like_count", "is_liked",
+        ]
+
+    def get_author_id(self, obj):
+        try:
+            return MediaProfile.objects.get(user=obj.author).id
+        except MediaProfile.DoesNotExist:
+            return None
+
+    def get_video(self, obj):
+        if not obj.video:
+            return None
+        return obj.video
+
+    def get_author_avatar(self, obj):
+        try:
+            profile = getattr(obj.author, "profile", None)
+            if profile and profile.avatar:
+                url = profile.avatar.url
+                if url.startswith("http"):
+                    return url
+                return url.lstrip('/')
+        except Exception:
+            pass
+        return None
+
+    def get_is_liked(self, obj):
+        request = self.context.get("request")
+        if request and request.user.is_authenticated:
+            return obj.likes.filter(author=request.user).exists()
+        return False
+
+
 class VideoSerializer(serializers.ModelSerializer):
     author = serializers.CharField(source="author.username", read_only=True)
     author_avatar = serializers.SerializerMethodField()

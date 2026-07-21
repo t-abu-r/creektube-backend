@@ -34,4 +34,11 @@ urlpatterns = [
     path("comment-edit/", CommentEdit.as_view(), name="CommentEdit"),
     path("comment-delete/<int:comment_id>/", CommentDelete.as_view(), name="CommentDelete"),
     path("settings/", UserSettings.as_view(), name="UserSettings"),
+    # Snips
+    path("snip/upload/", UploadSnip.as_view(), name="UploadSnip"),
+    path("snip/feed/", SnipFeed.as_view(), name="SnipFeed"),
+    path("snip/watch/", WatchSnip.as_view(), name="WatchSnip"),
+    path("snip/like/", LikeSnip.as_view(), name="LikeSnip"),
+    path("snip/own/", GetOwnSnips.as_view(), name="GetOwnSnips"),
+    path("snip/delete/<int:snip_id>/", SnipDelete.as_view(), name="SnipDelete"),
 ]
