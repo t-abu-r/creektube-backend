@@ -269,18 +269,18 @@ class Studio(APIView):
 
         title = request.data.get("title")
         description = request.data.get("description")
-        thumbnail = request.data.get("thumbnail")
-        video_file = request.data.get("video")
+        thumbnail_url = request.data.get("thumbnail_url")
+        video_url = request.data.get("video_url")
         category = request.data.get("category")
 
         if title:
             video.title = title
         if description:
             video.description = description
-        if thumbnail:
-            video.thumbnail = thumbnail
-        if video_file:
-            video.video = video_file
+        if thumbnail_url:
+            video.thumbnail = thumbnail_url
+        if video_url:
+            video.video = video_url
             video.is_approved = False
         if category:
             category_obj, _ = CategoryVideo.objects.get_or_create(
@@ -290,7 +290,7 @@ class Studio(APIView):
             video.category = category_obj
 
         from burst.admin_mixins import mark_committed
-        unchanged = [f for f in ['thumbnail', 'video'] if not request.data.get(f)]
+        unchanged = [f for f in ['thumbnail_url', 'video_url'] if not request.data.get(f)]
         mark_committed(video, unchanged)
         video.save()
         return Response(VideoSerializer(video, context={'request': request}).data, status=200)
@@ -726,12 +726,9 @@ class UploadVideo(APIView):
             video_file = request.data.get("video")
             thumbnail_file = request.data.get("thumbnail")
 
-        if not video_file:
-            return Response({"message": "No video provided"}, status=400)
         category = request.data.get('category')
         title = request.data.get("title")
         description = request.data.get("description")
-        thumbnail = request.data.get("thumbnail")
 
         if not video_file:
             return Response({"message": "No video provided"}, status=400)
@@ -747,7 +744,7 @@ class UploadVideo(APIView):
             title=title,
             category=category_obj,
             description=description,
-            thumbnail=thumbnail,
+            thumbnail=thumbnail_file,
             timestamp=timezone.now(),
             is_approved=False,
         )
