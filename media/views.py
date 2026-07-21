@@ -951,6 +951,7 @@ class UserSettings(APIView):
 # ---------------------------
 class UploadSnip(APIView):
     permission_classes = [IsAuthenticated]
+    parser_classes = [MultiPartParser, FormParser, JSONParser]
 
     def post(self, request):
         if not check_upload_rate_limit(request.user):
@@ -972,7 +973,7 @@ class UploadSnip(APIView):
             title=title,
             description=request.data.get("description", ""),
             video=video_url,
-            is_approved=False,
+            is_approved=True,
         )
 
         record_upload(request.user)
