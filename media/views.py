@@ -10,7 +10,7 @@ from .permissions import IsModerator
 from .Serializers import *
 from accounts.serializers import ProfileSerializer
 from .models import (Video, Comment, CommentLike, CategoryVideo, MediaProfile, Like,
-                     DisPike, Creek, WatchEvent, UploadRateLimit, Notification)
+                     DisPike, Creek, WatchEvent, UploadRateLimit, Notification, Snip, SnipLike)
 from django.db.models import Count, Q
 from . import ranking
 from django.views.decorators.csrf import csrf_exempt
@@ -944,3 +944,130 @@ class UserSettings(APIView):
             "message": "Settings updated",
             "notification_reply": profile.notification_reply,
         }, status=status.HTTP_200_OK)
+
+
+# ---------------------------
+# Snips (Short-form videos)
+# ---------------------------
+class UploadSnip(APIView):
+    permission_classes = [IsAuthenticated]
+
+    def post(self, request):
+        if not check_upload_rate_limit(request.user):
+            return Response(
+                {"message": "Upload rate limit reached. Please wait before uploading again."},
+                status=429,
+            )
+
+        video_url = request.data.get("video_url")
+        if not video_url:
+            return Response({"message": "No video provided"}, status=400)
+
+        title = request.data.get("title", "").strip()
+        if not title:
+            return Response({"message": "Title is required"}, status=400)
+
+        snip = Snip.objects.create(
+            author=request.user,
+            title=title,
+            description=request.data.get("description", ""),
+            video=video_url,
+            is_approved=False,
+        )
+
+        record_upload(request.user)
+        serializer = SnipSerializer(snip, context={"request": request})
+        return Response(serializer.data, status=201)
+
+
+class SnipFeed(APIView):
+    permission_classes = [AllowAny]
+
+    def get(self, request):
+        try:
+            page = max(int(request.query_params.get("page", 1)), 1)
+        except (TypeError, ValueError):
+            page = 1
+        try:
+            page_size = min(max(int(request.query_params.get("page_size", 12)), 1), 50)
+        except (TypeError, ValueError):
+            page_size = 12
+
+        approved_snips = Snip.objects.filter(is_approved=True).select_related("author")
+        total = approved_snips.count()
+
+        start = (page - 1) * page_size
+        snips = approved_snips[start : start + page_size]
+
+        serializer = SnipSerializer(snips, many=True, context={"request": request})
+        return Response({
+            "results": serializer.data,
+            "page": page,
+            "page_size": page_size,
+            "count": total,
+        }, status=200)
+
+
+class WatchSnip(APIView):
+    permission_classes = [AllowAny]
+
+    def get(self, request):
+        snip_id = request.query_params.get("id")
+        if not snip_id:
+            return Response({"detail": "Snip ID required"}, status=400)
+
+        try:
+            snip = Snip.objects.select_related("author").get(id=snip_id)
+        except Snip.DoesNotExist:
+            return Response({"detail": "Snip not found"}, status=404)
+
+        Snip.objects.filter(id=snip.id).update(view_count=models.F("view_count") + 1)
+        snip.refresh_from_db(["view_count"])
+
+        is_liked = False
+        if request.user.is_authenticated:
+            is_liked = SnipLike.objects.filter(author=request.user, snip=snip).exists()
+
+        return Response({
+            **SnipSerializer(snip, context={"request": request}).data,
+            "is_liked": is_liked,
+        }, status=200)
+
+
+class LikeSnip(APIView):
+    permission_classes = [IsAuthenticated]
+
+    def post(self, request):
+        snip_id = request.data.get("id")
+        if not snip_id:
+            return Response({"detail": "Snip ID required"}, status=400)
+
+        snip = get_object_or_404(Snip, id=snip_id)
+        like, created = SnipLike.objects.get_or_create(author=request.user, snip=snip)
+
+        if not created:
+            like.delete()
+            Snip.objects.filter(id=snip.id).update(like_count=models.F("like_count") - 1)
+            return Response({"is_liked": False, "like_count": max(snip.like_count - 1, 0)}, status=200)
+
+        Snip.objects.filter(id=snip.id).update(like_count=models.F("like_count") + 1)
+        snip.refresh_from_db(["like_count"])
+        return Response({"is_liked": True, "like_count": snip.like_count}, status=201)
+
+
+class GetOwnSnips(APIView):
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request):
+        snips = Snip.objects.filter(author=request.user).order_by("-timestamp")
+        serializer = SnipSerializer(snips, many=True, context={"request": request})
+        return Response(serializer.data, status=200)
+
+
+class SnipDelete(APIView):
+    permission_classes = [IsAuthenticated]
+
+    def delete(self, request, snip_id):
+        snip = get_object_or_404(Snip, id=snip_id, author=request.user)
+        snip.delete()
+        return Response(status=204)

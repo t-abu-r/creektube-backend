@@ -42,6 +42,35 @@ class Video(models.Model):
         return self.title
 
 
+class Snip(models.Model):
+    author = models.ForeignKey(User, on_delete=models.CASCADE)
+    title = models.CharField(max_length=100)
+    description = models.TextField(blank=True, default="")
+    video = models.TextField()
+    timestamp = models.DateTimeField(auto_now_add=True)
+    is_approved = models.BooleanField(default=False)
+    view_count = models.PositiveIntegerField(default=0)
+    like_count = models.PositiveIntegerField(default=0)
+
+    class Meta:
+        ordering = ['-timestamp']
+
+    def __str__(self):
+        return self.title
+
+
+class SnipLike(models.Model):
+    author = models.ForeignKey(User, on_delete=models.CASCADE)
+    snip = models.ForeignKey(Snip, on_delete=models.CASCADE, related_name='likes')
+    created_at = models.DateTimeField(auto_now_add=True, null=True)
+
+    class Meta:
+        unique_together = ['author', 'snip']
+
+    def __str__(self):
+        return f"{self.author.username} liked snip {self.snip.id}"
+
+
 class Comment(models.Model):
     author = models.ForeignKey(User, on_delete=models.CASCADE)
     video = models.ForeignKey(Video, related_name="comments", on_delete=models.CASCADE, null=True)
