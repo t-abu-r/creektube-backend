@@ -245,6 +245,7 @@ class GuestGetVideo(APIView):
                     "is_approved": s.is_approved,
                     "author": s.author.username,
                     "author_id": getattr(getattr(s.author, "mediaprofile", None), "id", s.author.id),
+                    "author_avatar": getattr(getattr(s.author, "mediaprofile", None), "avatar", s.author.avatar),
                     "category": "shortform-videos",
                     "category_name": "Shortform Videos",
                     "view_count": s.view_count,
