@@ -146,6 +146,7 @@ class LoginGetVideo(APIView):
                     "is_approved": s.is_approved,
                     "author": s.author.username,
                     "author_id": getattr(getattr(s.author, "mediaprofile", None), "id", s.author.id),
+                    "author_avatar": Profile.objects.filter(user=s.author).first().avatar.url if Profile.objects.filter(user=s.author).exists() else None,
                     "category": "shortform-videos",
                     "category_name": "Shortform Videos",
                     "view_count": s.view_count,
@@ -234,9 +235,9 @@ class GuestGetVideo(APIView):
             page_snips = snips[start:start + page_size]
             # Serialize Snips
             snip_serializer = SnipSerializer(page_snips, many=True, context={'request': request})
-            # Filtering Author Avatar
-            # User = MediaProfile.objects.filter(user=s.author).first()
-            # UserAvatar = User.avatar if User else None
+
+            # Add avatar
+            # Profile = Profile.objects.filter(user=s.author).first()
             results = [
                 {
                     "id": s.id,
@@ -248,7 +249,7 @@ class GuestGetVideo(APIView):
                     "is_approved": s.is_approved,
                     "author": s.author.username,
                     "author_id": getattr(getattr(s.author, "mediaprofile", None), "id", s.author.id),
-                    "author_avatar": MediaProfile.objects.filter(user=s.author).first().avatar.url if MediaProfile.objects.filter(user=s.author).exists() else None,
+                    "author_avatar": Profile.objects.filter(user=s.author).first().avatar.url if Profile.objects.filter(user=s.author).exists() else None,
                     "category": "shortform-videos",
                     "category_name": "Shortform Videos",
                     "view_count": s.view_count,
