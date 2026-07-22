@@ -15,6 +15,5 @@ django.setup()
 from django.core.management import call_command
 call_command("migrate", "--noinput")
 
-from django.core.wsgi import get_wsgi_application
+from burst.asgi import application as app
 
-app = get_wsgi_application()

@@ -3,7 +3,7 @@
     "builder": "NIXPACKS"
   },
   "deploy": {
-    "startCommand": "python manage.py makemigrations && python manage.py migrate && daphne burst.asgi:application",
+    "startCommand": "python manage.py makemigrations && python manage.py migrate && daphne -b 0.0.0.0 -p $PORT burst.asgi:application",
     "restartPolicyType": "ON_FAILURE"
   }
 }

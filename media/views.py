@@ -119,6 +119,47 @@ class LoginGetVideo(APIView):
 
     def get(self, request):
         profile, _ = MediaProfile.objects.get_or_create(user=request.user)
+        category_param = request.query_params.get('category', '').strip().lower()
+
+        if category_param in ['shortform-videos', 'snips']:
+            snips = Snip.objects.filter(is_approved=True).select_related('author').order_by('-timestamp')
+            total = snips.count()
+            try:
+                page = max(int(request.query_params.get('page', 1)), 1)
+            except (TypeError, ValueError):
+                page = 1
+            try:
+                page_size = min(max(int(request.query_params.get('page_size', 20)), 1), 100)
+            except (TypeError, ValueError):
+                page_size = 20
+
+            start = (page - 1) * page_size
+            page_snips = snips[start:start + page_size]
+            results = [
+                {
+                    "id": s.id,
+                    "title": s.title,
+                    "description": s.description,
+                    "thumbnail": s.video,
+                    "video": s.video,
+                    "timestamp": s.timestamp,
+                    "is_approved": s.is_approved,
+                    "author": s.author.username,
+                    "author_id": getattr(getattr(s.author, "mediaprofile", None), "id", s.author.id),
+                    "category": "shortform-videos",
+                    "category_name": "Shortform Videos",
+                    "view_count": s.view_count,
+                    "is_snip": True,
+                }
+                for s in page_snips
+            ]
+            return Response({
+                "results": results,
+                "page": page,
+                "page_size": page_size,
+                "count": total,
+            }, status=200)
+
         user_interest = profile.categories
         creeked_author_ids = set(
             Creek.objects.filter(author=request.user)
@@ -133,6 +174,9 @@ class LoginGetVideo(APIView):
                 num_dislikes=Count('dispikes', distinct=True),
             )
         )
+
+        if category_param:
+            approved_videos = approved_videos.filter(category__slug=category_param)
 
         CANDIDATE_LIMIT = 500
         candidates = list(approved_videos.order_by('-timestamp')[:CANDIDATE_LIMIT])
@@ -172,6 +216,47 @@ class GuestGetVideo(APIView):
     permission_classes = [AllowAny]
 
     def get(self, request):
+        category_param = request.query_params.get('category', '').strip().lower()
+
+        if category_param in ['shortform-videos', 'snips']:
+            snips = Snip.objects.filter(is_approved=True).select_related('author').order_by('-timestamp')
+            total = snips.count()
+            try:
+                page = max(int(request.query_params.get('page', 1)), 1)
+            except (TypeError, ValueError):
+                page = 1
+            try:
+                page_size = min(max(int(request.query_params.get('page_size', 20)), 1), 100)
+            except (TypeError, ValueError):
+                page_size = 20
+
+            start = (page - 1) * page_size
+            page_snips = snips[start:start + page_size]
+            results = [
+                {
+                    "id": s.id,
+                    "title": s.title,
+                    "description": s.description,
+                    "thumbnail": s.video,
+                    "video": s.video,
+                    "timestamp": s.timestamp,
+                    "is_approved": s.is_approved,
+                    "author": s.author.username,
+                    "author_id": getattr(getattr(s.author, "mediaprofile", None), "id", s.author.id),
+                    "category": "shortform-videos",
+                    "category_name": "Shortform Videos",
+                    "view_count": s.view_count,
+                    "is_snip": True,
+                }
+                for s in page_snips
+            ]
+            return Response({
+                "results": results,
+                "page": page,
+                "page_size": page_size,
+                "count": total,
+            }, status=200)
+
         approved_videos = (
             Video.objects.filter(is_approved=True)
             .select_related('category')
@@ -180,6 +265,9 @@ class GuestGetVideo(APIView):
                 num_dislikes=Count('dispikes', distinct=True),
             )
         )
+
+        if category_param:
+            approved_videos = approved_videos.filter(category__slug=category_param)
 
         CANDIDATE_LIMIT = 500
         candidates = list(approved_videos.order_by('-timestamp')[:CANDIDATE_LIMIT])
@@ -206,6 +294,7 @@ class GuestGetVideo(APIView):
         }, status=200)
 
 
+
 # ---------------------------
 # Studio
 # ---------------------------
@@ -225,6 +314,10 @@ class Categories(APIView):
     permission_classes = [AllowAny]
 
     def get(self, request):
+        CategoryVideo.objects.get_or_create(
+            slug="shortform-videos",
+            defaults={"name": "Shortform Videos"}
+        )
         categories = CategoryVideo.objects.annotate(video_count=Count('videos'))
         serializer = CategoryVideoSerializer(categories, many=True)
         return Response(serializer.data, status=status.HTTP_200_OK)
@@ -988,6 +1081,16 @@ class UploadSnip(APIView):
             )
 
         video_url = request.data.get("video_url")
+        video_file = request.FILES.get("video") or request.FILES.get("file") or request.data.get("video")
+
+        if not video_url and video_file and not isinstance(video_file, str):
+            from django.core.files.storage import default_storage
+            filename = default_storage.save(f"snips/{request.user.id}_{int(timezone.now().timestamp())}_{video_file.name}", video_file)
+            video_url = default_storage.url(filename)
+
+        if not video_url and isinstance(request.data.get("video"), str):
+            video_url = request.data.get("video")
+
         if not video_url:
             return Response({"message": "No video provided"}, status=400)
 
@@ -1065,7 +1168,7 @@ class WatchSnip(APIView):
             return Response({"detail": "Snip not found"}, status=404)
 
         Snip.objects.filter(id=snip.id).update(view_count=models.F("view_count") + 1)
-        snip.refresh_from_db(["view_count"])
+        snip.refresh_from_db(fields=["view_count"])
 
         is_liked = False
         if request.user.is_authenticated:
@@ -1094,7 +1197,7 @@ class LikeSnip(APIView):
             return Response({"is_liked": False, "like_count": max(snip.like_count - 1, 0)}, status=200)
 
         Snip.objects.filter(id=snip.id).update(like_count=models.F("like_count") + 1)
-        snip.refresh_from_db(["like_count"])
+        snip.refresh_from_db(fields=["like_count"])
         return Response({"is_liked": True, "like_count": snip.like_count}, status=201)
 
 

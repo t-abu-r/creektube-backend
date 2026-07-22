@@ -7,7 +7,7 @@ from rest_framework.test import APIClient
 
 from . import ranking
 from .models import (CategoryVideo, Creek, DisPike, Like, MediaProfile,
-                     Video, WatchEvent, UploadRateLimit)
+                     Snip, Video, WatchEvent, UploadRateLimit)
 
 
 def make_video(author, category, hours_old=0, is_approved=True, title="video"):
@@ -376,6 +376,20 @@ class FeedViewTests(TestCase):
         self.client.post("/media/watchvideo/", {"video_id": self.video.id})
         self.video.refresh_from_db()
         self.assertEqual(self.video.view_count, 1)
+
+    def test_watch_snip_view_count_increments(self):
+        snip = Snip.objects.create(
+            author=self.user,
+            title="snip test",
+            description="desc",
+            video="https://example.com/video.mp4",
+        )
+
+        resp = self.client.get("/media/snip/watch/", {"id": snip.id})
+
+        self.assertEqual(resp.status_code, 200)
+        snip.refresh_from_db()
+        self.assertEqual(snip.view_count, 1)
 
     def test_view_dedup_prevents_double_counting(self):
         self.client.force_authenticate(user=self.user)
