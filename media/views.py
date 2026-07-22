@@ -1197,7 +1197,7 @@ class LikeSnip(APIView):
             return Response({"is_liked": False, "like_count": max(snip.like_count - 1, 0)}, status=200)
 
         Snip.objects.filter(id=snip.id).update(like_count=models.F("like_count") + 1)
-        snip.refresh_from_db(["like_count"])
+        snip.refresh_from_db(fields=["like_count"])
         return Response({"is_liked": True, "like_count": snip.like_count}, status=201)
 
 
