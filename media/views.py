@@ -232,6 +232,8 @@ class GuestGetVideo(APIView):
 
             start = (page - 1) * page_size
             page_snips = snips[start:start + page_size]
+            # Serialize Snips
+            snip_serializer = SnipSerializer(page_snips, many=True, context={'request': request})
             results = [
                 {
                     "id": s.id,
@@ -248,7 +250,7 @@ class GuestGetVideo(APIView):
                     "view_count": s.view_count,
                     "is_snip": True,
                 }
-                for s in page_snips
+                for s in snip_serializer.instance
             ]
             return Response({
                 "results": results,

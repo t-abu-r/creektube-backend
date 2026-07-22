@@ -1,0 +1,310 @@
+[33md0eb180[m[33m ([m[1;31morigin/main[m[33m, [m[1;31morigin/HEAD[m[33m, [m[1;32mmain[m[33m)[m Merge test into main
+[33mc4cb174[m[33m ([m[1;36mHEAD[m[33m -> [m[1;32mtest[m[33m, [m[1;31morigin/test[m[33m)[m Fix snips
+[33m004dea9[m SNIPS EDIT
+[33mbdda35f[m Fix Snips
+[33md42667f[m Add media and staticfiles
+[33m79b51fd[m Add roting.py
+[33m5b67841[m Fix Snips and tests
+[33m4baec07[m Fix SSL database ISSUe
+[33m37ad988[m Merge remote-tracking branch 'origin/test'
+[33m7e356f9[m Add WSS for snips: Django Channels consumer, real-time feed/likes/views/viewer count, Daphne ASGI server
+[33mfe4e0ab[m Merge remote-tracking branch 'origin/test'
+[33m7898dda[m Fix Mod Panel
+[33m08129c4[m Merge remote-tracking branch 'origin/test'
+[33m38ee6af[m Fix snips: auto-approve upload, add parser_classes, add snips to Studio content page, fix snips feed
+[33m10f4311[m Merge remote-tracking branch 'origin/test'
+[33mdb5431f[m Add migrations for snip
+[33m5672962[m Merge remote-tracking branch 'origin/test'
+[33ma8970f0[m Add Snips: short-form video feature with model, serializer, views, admin, migration
+[33m77b797d[m Merge remote-tracking branch 'origin/test'
+[33ma30cf69[m Prevent self-creek, rename Subscribe to Creek, hide button on own channel, fix Account view creek status
+[33m4668086[m Merge remote-tracking branch 'origin/test'
+[33m5cbd3fd[m Add JSONParser to UploadVideo and Studio views
+[33mfa6f513[m Merge remote-tracking branch 'origin/test'
+[33m113228b[m Fix cookie deletion to match samesite/secure attributes
+[33m15bfa37[m Merge remote-tracking branch 'origin/test'
+[33m9f188a1[m Fix cookie deletion to match samesite/secure attributes
+[33m970cfa9[m Merge remote-tracking branch 'origin/test'
+[33m4183cbe[m Fix authentication issues
+[33m20d2299[m Merge remote-tracking branch 'origin/test'
+[33ma5400f8[m Fix authentication issues
+[33me3b255c[m Merge remote-tracking branch 'origin/test'
+[33m53b0aee[m Add Better Video Uploading
+[33mb3cb06f[m Merge remote-tracking branch 'origin/test'
+[33mf79492c[m Merge remote-tracking branch 'origin/test'
+[33m9b8e302[m Merge remote-tracking branch 'origin/test'
+[33m5cd40ea[m Merge remote-tracking branch 'origin/test'
+[33ma6dface[m EE
+[33m61b337d[m Add Cookies :)
+[33mde3a602[m Fix migrations error
+[33m6a131a9[m Fix migrations error
+[33m75ceefb[m add notification signals with reply preference check
+[33m87c60d7[m ADD spam detection, notifications, profile to setting rename, comments/replies liking, unliking, deletion, editing
+[33ma570dff[m Add migration file
+[33m23f7e35[m Add A dedicated Search page :)
+[33m3104ea9[m Merge remote-tracking branch 'origin/test'
+[33m7d5f492[m Merge remote-tracking branch 'origin/test'
+[33me1eaf99[m Merge remote-tracking branch 'origin/test'
+[33m5163390[m fix: categories - SetInterests, name/slug collision, CRUD management
+[33m043053d[m feat: co-watch ranking, view counts, spam prevention, retention, studio comments
+[33m3d4e640[m ADD BETTER ALGORITHMS
+[33mba94f0a[m chore: push backend as requested
+[33md080e5c[m Merge remote-tracking branch 'origin/test'
+[33m86732c9[m Add files via upload
+[33m9dc90b0[m Add weighted feed ranking algorithm
+[33m6ad5c72[m Add weighted feed ranking algorithm
+[33m56f226d[m ADD_BETTER_FEED
+[33m957d4fa[m Merge remote-tracking branch 'origin/test'
+[33m975dd83[m feat: admin form uses text fields for Cloudinary public IDs instead of file upload
+[33mb894ad2[m Merge remote-tracking branch 'origin/test'
+[33m6bd2c66[m Add collected static files
+[33mfa7e76d[m Merge remote-tracking branch 'origin/test'
+[33m1afbb2a[m fix: admin form properly handles Cloudinary file fields - only uploads changed files
+[33md1b0073[m Merge remote-tracking branch 'origin/test'
+[33m78e5635[m fix: exclude file fields from admin forms to prevent Cloudinary upload errors
+[33m07cea17[m Merge remote-tracking branch 'origin/test'
+[33m21dc888[m fix: mark unchanged file fields committed before save in admin and studio
+[33m2a2fb82[m Merge remote-tracking branch 'origin/test'
+[33m01c267a[m fix: prevent Cloudinary re-upload of unchanged files in admin
+[33m0d484ae[m Merge remote-tracking branch 'origin/test'
+[33m7cedfdc[m fix: use Cloudinary storage for media files on Vercel
+[33mbfbd650[m Merge remote-tracking branch 'origin/test'
+[33m31ad5b3[m fix: add django.contrib.sessions to INSTALLED_APPS
+[33m938a35e[m Merge remote-tracking branch 'origin/test'
+[33m5e3d087[m fix: run migrations on cold start, fix staticfiles and profile errors
+[33m168bf5a[m Merge remote-tracking branch 'origin/test'
+[33mef2c9eb[m Add collected static files
+[33m82c53f1[m Merge remote-tracking branch 'origin/test'
+[33m74b9a4f[m Fix-DA-YAML-A-ADDIN-VERCELJSON
+[33m336e78e[m Merge remote-tracking branch 'origin/test'
+[33mf47bbbf[m Fix-DA-YAML-A-ADDIN-VERCELJSON
+[33m80bf460[m Merge remote-tracking branch 'origin/test'
+[33mb9c085b[m Fix-DA-YAML-A
+[33m6f79550[m Merge remote-tracking branch 'origin/test'
+[33m5b391c4[m Fix-DA-YAML-A
+[33mce8790e[m Fix_Conflict_ErrorsMaer_TYAML
+[33m91ea160[m Fix YA<eeeeeeeML File Syntrax
+[33m44147f4[m Fix YA<eeeeeeeML File Syntrax
+[33m3f95def[m Fix YA<eeeeeeeML File Syntrax
+[33m3105bd0[m Fix YA<eeeeeeeML File Syntrax
+[33mb195e27[m Fix YA<ML File Syntraxeeeeee
+[33m49facd6[m Fix YA<ML File Syntrax
+[33m9391ee9[m Fix YA<ML File Syntrax
+[33mbf52b8c[m Fix YA<ML File Syntrax
+[33mc8f8c84[m Fix YA<ML File Syntrax
+[33mc411c89[m Fix YA<ML File Syntrax
+[33mc9b9f93[m YAML-TESTED-TEn-MAINDD
+[33m674cc12[m YAML-TESTED-TEn-MAINDD
+[33m9852712[m YAML-TESTED-TEn-MAIN
+[33m40ad2f4[m YAML-TESTED-TEn-MAIN
+[33m9141b76[m YAML-TESTED-TEn-MAIN
+[33m431955d[m YAML-TESTED-TEn-MAIN
+[33mefc4611[m D@
+[33mbb0ce7f[m Fix CORS/CSRF origins: spread env var split instead of calling .split() on list
+[33m6339868[m Cleanup: env vars, dead code, hardcoded URLs, credentials, formatting
+[33m7747cd5[m[33m ([m[1;35mrefs/stash[m[33m)[m WIP on main: 5e714b3 Cleanup: env vars, dead code, hardcoded URLs, credentials, formatting
+[33m29a1acf[m index on main: 5e714b3 Cleanup: env vars, dead code, hardcoded URLs, credentials, formatting
+[33m5e714b3[m Cleanup: env vars, dead code, hardcoded URLs, credentials, formatting
+[33m7480076[m Update index.py
+[33m0182516[m Create index.py
+[33mc0391f6[m Add Vercel configuration file for deployment
+[33m9404dcc[m Update urls.py
+[33m0a9dc0a[m Add storage settings for Cloudinary and WhiteNoise
+[33m6c1e4ac[m Comment out django.contrib.sessions in settings
+[33m8345144[m Update base.py
+[33m9acd189[m Update settings by commenting out directchat and ASGI
+[33mbedd9f9[m Update prod.py
+[33m653c161[m Add ASGI_APPLICATION setting to production config
+[33mda3860a[m Update requirements.txt
+[33mdd569f0[m Comment out Cloudinary settings in base.py
+[33m966e146[m Uncomment cloudinary and cloudinary_storage settings
+[33m992fc54[m Update database comment for clarity
+[33m00cda5c[m Uncomment Cloudinary settings for storage
+[33m5bf5d11[m Update prod.py
+[33m352697d[m * Fixed routing
+[33m4893ac1[m * Fixed errors...
+[33m8777de6[m * Fixed errors...
+[33m6c4f0c0[m * Fixed errors...
+[33m5a755c4[m * Fixed errors...
+[33mfd503a0[m * Fixing Video Delete...
+[33m3cc21ff[m * Fixing PFP and routing.
+[33mabf38f4[m * Fixing PFP and routing.
+[33mc089b89[m * Neccessary things done
+[33m68e4d75[m * Brought back the Main page design instead of that AI thingy
+[33m42c91ab[m * Js doing things
+[33m44ede7c[m * Mass Revamping!
+[33m81d3b0e[m * Fixing WatchUser While Authenticated not showing True value of Creeks :)
+[33m801f7e7[m * Fixing WatchUser While Authenticated not showing True value of Creeks :)
+[33m4993d34[m * Fixing WatchUser While Authenticated not showing True value of Creeks :)
+[33m6e366cd[m * Fixing WatchUser While Authenticated not showing True value of Creeks :)
+[33m05b6dd8[m * Fixing GuestUser Not able to watch Videos :)
+[33m2da0975[m * Fixing errors
+[33me1be4a2[m * Fixing errors
+[33me922d0c[m message
+[33mae6842f[m * Fixing random things
+[33m03d42de[m * Fixing random things
+[33m274235d[m * Fixing random things
+[33m1f54312[m * Updated the Algorithm, Now User Interests then Creeked Accounts then others.
+[33m200cfee[m * Minor Adjustments * Fixing the object asking for a Class...
+[33me61e2a7[m * Made a Creek FUnction attached it for it to function correctly.
+[33mc42ccd8[m * Hmm tryna fix the issue of string provided instead of an instance.
+[33m9e301bc[m * Hmm tryna fix the issue of string provided instead of an instance.
+[33m5e35058[m * Hmm tryna fix the issue of string provided instead of an instance.
+[33m92a0d38[m * Migration errors...
+[33m62c606e[m * Migration errors...
+[33m22de803[m * Migration errors...
+[33m5a7bdc5[m * Migration errors...
+[33m517181f[m * Migration
+[33md37cf9a[m * Minor related name confusion fixing.
+[33m0a4b1c9[m * Minor Import issue
+[33m001283d[m * Added DisPike and Creeking. *Some Video Player Issues.
+[33m1c6d305[m * Adding a Cool Pike Button basically Like or dislike.
+[33m55a7489[m * Adding a Cool Pike Button basically Like or dislike.
+[33md74976a[m * Adding The Official Tag
+[33m391a8c7[m * CreekTube Branding!
+[33m167a70a[m * CreekTube Branding!
+[33m673bfd0[m * CreekTube Branding!
+[33m16cca24[m * CreekTube Branding!
+[33mf1aad42[m * Stupid Staticfiles
+[33ma9149e8[m * Kicking out Staticsfile
+[33me822f7b[m * Trying to fix the  Admin Panel...
+[33md166b6e[m * Trying to fix the  Admin Panel...
+[33mb8b4cc3[m * Trying to fix the  Admin Panel...
+[33me0c9bf1[m * New and COOL Jazzmin Admin Panel!
+[33m706fd28[m * Stopping Cloudinary, from stealing all the static files.
+[33m7c5d88a[m * Stopping Cloudinary, from stealing all the static files.
+[33md7c2c29[m * Fixing Admin Panel, by fixing WhiteNoise to serve the Static files.
+[33md6f6313[m * Fixing Admin Panel, by fixing WhiteNoise to serve the Static files.
+[33m49f8828[m Removed Console.log/Error/Warn, etc. + Removed Superuser Creation file, nixpacks.toml reference + removing check for username admin views.py, to create a superuser instead of a normal user.
+[33m0391574[m Fixing(Trying to) CheckUserInfo
+[33ma27f1af[m Fixing CheckUserInfo
+[33mdace40e[m Fixing CheckUserInfo
+[33m0753820[m Minor Improvements, Quality of Life...
+[33mdcf4d5c[m Fixing MediaProfile and Profile Confusion
+[33m3b0d137[m Adding Bio
+[33m0609025[m Adding Bio
+[33mee5988e[m a
+[33m001d2f1[m VERYY MINOR CHNAGE
+[33me5549a9[m VERYY MINOR CHNAGE
+[33m10713aa[m VERYY MINOR CHNAGE
+[33m8be7b31[m VERYY MINOR CHNAGE
+[33m1703791[m VERYY MINOR CHNAGE
+[33m99746c1[m VERYY MINOR CHNAGE
+[33ma1c7d65[m Design Improvement
+[33m587e9e1[m Medium Improvement
+[33mdf0d3a0[m Adding Author page
+[33mc3110d0[m Adding Author page
+[33mb259348[m Tryna fix it
+[33m5b213cc[m Make more Side
+[33m197ae13[m fix cors
+[33md4d4c1d[m Just trying
+[33m984b07d[m Hmmm GetUserData.ts
+[33ma1fab3b[m Hmmm GetUserData.ts
+[33mcef726a[m Random
+[33m3aff165[m Random
+[33mc9ee956[m Random
+[33m5a27071[m Fixing AAvatar on profile
+[33mf907dd7[m Kinda trying to make a superuser
+[33m4f1f434[m Kinda trying to make a superuser
+[33mb3b95fb[m Kinda trying to make a superuser
+[33me584412[m Kinda trying to make a superuser
+[33m65a201c[m Kinda trying to make a superuser
+[33m75c6672[m Kinda trying to make a superuser
+[33m387672e[m Kinda trying to make a superuser
+[33mf10710c[m Kinda trying to make a superuser
+[33me0627f3[m PLZZ WORK!
+[33m44c006c[m PLZZ WORK!
+[33ma916d06[m remove duplicate bio migrations
+[33m7fe217b[m PLZZ WORK!
+[33m74f9e2a[m PLZZ WORK!
+[33m49d1aec[m PLZZ WORK!
+[33m2a15a16[m fix duplicate bio column migration
+[33m2ce67a4[m migration for CloudinaryField avatar
+[33m63718af[m CloudinaryField for avatar
+[33mb6a0d52[m PLZZ WORK!
+[33mfc3a31c[m PLZZ WORK!
+[33m7ff3ef8[m PLZZ WORK!
+[33m0a8f50f[m PLZZ WORK!
+[33m18dd997[m PLZZ WORK!
+[33me6ff5d6[m PLZZ WORK!
+[33m1c049a4[m PLZZ WORK!
+[33mc4b0b5d[m PLZZ WORK!
+[33ma5da551[m PLZZ WORK!
+[33m925ea61[m PLZZ WORK!
+[33m4e589f4[m PLZZ WORK!
+[33m56de76f[m PLZZ WORK!
+[33mbc9fc07[m PLZZ WORK!
+[33mf9909fc[m PLZZ WORK!
+[33mcadd77f[m PLZZ WORK!
+[33mbcec40f[m PLZZ WORK!
+[33m466e776[m PLZZ WORK!
+[33m6c3f519[m PLZZ WORK!
+[33me0aa8c0[m PLZZ WORK!
+[33mff2a8a8[m Revamping some code
+[33mad54964[m Revamping some code
+[33m170bcd5[m Revamping some code
+[33m89e069e[m Revamping some code
+[33m9303be0[m Revamping some code
+[33mb0e6e44[m Differing MediaProfile and Profile
+[33ma3931a1[m Differing MediaProfile and Profile
+[33mefa5b5e[m Fixing Profile Avatar
+[33m88a58ce[m Fixing Profile Avatar
+[33ma6278ae[m Fixing APi endpoints for Profile Page
+[33me269240[m Fixing APi endpoints for Profile Page
+[33m92e6ad8[m Fixing APi endpoints for Profile Page
+[33m1e1f4ef[m Fixing APi endpoints for Profile Page
+[33m85a9790[m Fixing APi endpoints for Profile Page
+[33m86ce0e2[m Fixing Video not working
+[33m6636105[m Viewing views.py
+[33mdc9d191[m Viewing views.py
+[33m1efeb7e[m configure cloudinary credentials explicitly
+[33md1e6f2b[m settings.py
+[33me38feb0[m Fixing(Trying to) Serializers.py
+[33mbe7207d[m Fixing(Trying to) Serializers.py
+[33m6ab3336[m fix REST_FRAMEWORK settings
+[33m8834ae5[m Fixing(Trying to) nixpacks.toml
+[33m370a199[m Merge remote-tracking branch 'origin/main'
+[33maed5c4e[m Plzz Cloudinary WORK PLZZZZZZZZZZZ
+[33m0ccebe4[m Update nixpacks.toml
+[33m637391a[m Update nixpacks.toml
+[33me59a8bb[m Update nixpacks.toml
+[33m67428a7[m Update nixpacks.toml
+[33mc8d8e80[m Update nixpacks.toml
+[33mf78b234[m Update nixpacks.toml
+[33m0868c9a[m Update settings.py
+[33m23f59e9[m Update nixpacks.toml
+[33m26127e4[m Update nixpacks.toml
+[33md4a18a9[m Update nixpacks.toml
+[33m8320971[m Update models.py
+[33m271b040[m Update nixpacks.toml
+[33me70d7a2[m Update views.py
+[33m5697a43[m fix cloudinary app order
+[33m62988c2[m Fixing Large Files not being uploaded!
+[33m2fd3b85[m remove procfile use nixpacks only
+[33mebfa424[m Waatch Video
+[33m86de686[m Waatch Video
+[33mcec0b38[m Waatch Video
+[33mc73fdd0[m Waatch Video
+[33m890bfb3[m GetVideos link update
+[33m1be85ea[m CLoudinary Setrup
+[33m4508631[m CLoudinary Setrup
+[33m68ea7e5[m CLoudinary Setrup
+[33m7e710d4[m add getmod url
+[33m5669bbc[m fix register smtp crash and activate user on register
+[33m67dc7e8[m fix login null user check
+[33madcb5ad[m Fixed activation
+[33m7464d16[m Made debug reliance on Railway
+[33mfe5034a[m MediaProfile Import Error fixed
+[33m8ee201a[m Login aint working fixed
+[33me2500dc[m Login aint working fixed
+[33me41c03b[m add railway domain to csrf trusted origins
+[33ma2b88b7[m EE
+[33m7f207da[m EE
+[33mc2c0efb[m EE
+[33m396e331[m EE
+[33m841bc8a[m initial commit
+[33m90614da[m initial commit
+[33m5f1d7a9[m initial commit
+[33m0c7bc03[m Configure Railway deployment
+[33m89d36f8[m Configure Railway deployment
+[33mf4b7a6e[m Initial clean commit
