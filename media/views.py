@@ -1168,7 +1168,7 @@ class WatchSnip(APIView):
             return Response({"detail": "Snip not found"}, status=404)
 
         Snip.objects.filter(id=snip.id).update(view_count=models.F("view_count") + 1)
-        snip.refresh_from_db(["view_count"])
+        snip.refresh_from_db(fields=["view_count"])
 
         is_liked = False
         if request.user.is_authenticated:

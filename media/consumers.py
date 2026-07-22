@@ -132,12 +132,12 @@ class SnipFeedConsumer(AsyncWebsocketConsumer):
             like.delete()
             from django.db.models import F
             Snip.objects.filter(id=snip_id).update(like_count=F("like_count") - 1)
-            snip.refresh_from_db(["like_count"])
+            snip.refresh_from_db(fields=["like_count"])
             return {"like_count": max(snip.like_count, 0), "is_liked": False}
 
         from django.db.models import F
         Snip.objects.filter(id=snip_id).update(like_count=F("like_count") + 1)
-        snip.refresh_from_db(["like_count"])
+        snip.refresh_from_db(fields=["like_count"])
         return {"like_count": snip.like_count, "is_liked": True}
 
     @database_sync_to_async
