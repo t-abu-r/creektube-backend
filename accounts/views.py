@@ -101,7 +101,8 @@ def _clear_auth_cookies(response):
     response.delete_cookie("authenticated", path="/", samesite="None" if production else "Lax", secure=production)
 
 
-def _send_code_email(user, code, subject, purpose_label):
+def _send_code_email(user, code, subject, purpose_label, to_email=None):
+    recipient = to_email or user.email
     text_content = (
         f"Your CreekTube {purpose_label} code is: {code}\n\n"
         f"This code expires in 15 minutes. If you didn't request this, ignore this email."
@@ -119,12 +120,13 @@ def _send_code_email(user, code, subject, purpose_label):
     try:
         email_message = EmailMultiAlternatives(
             subject=subject, body=text_content,
-            from_email=settings.DEFAULT_FROM_EMAIL, to=[user.email],
+            from_email=settings.DEFAULT_FROM_EMAIL, to=[recipient],
         )
         email_message.attach_alternative(html_content, "text/html")
         email_message.send(fail_silently=False)
-    except Exception:
-        pass
+    except Exception as e:
+        import logging
+        logging.getLogger(__name__).error(f"Failed to send email to {recipient}: {e}")
 
 
 # ---------------------------
@@ -469,10 +471,7 @@ class SetRecoveryEmail(APIView):
         profile.save(update_fields=["recovery_email", "recovery_email_verified"])
 
         code = _create_security_code(request.user, "recovery_email")
-        try:
-            _send_code_email(request.user, code, "Verify Your Recovery Email - CreekTube", "recovery email verification")
-        except Exception:
-            pass
+        _send_code_email(request.user, code, "Verify Your Recovery Email - CreekTube", "recovery email verification", to_email=recovery_email)
 
         return Response({"detail": "Verification code sent to your recovery email"}, status=200)
 
@@ -505,10 +504,7 @@ class ResendRecoveryEmailCode(APIView):
             return Response({"error": "No recovery email set"}, status=400)
 
         code = _create_security_code(request.user, "recovery_email")
-        try:
-            _send_code_email(request.user, code, "Verify Your Recovery Email - CreekTube", "recovery email verification")
-        except Exception:
-            pass
+        _send_code_email(request.user, code, "Verify Your Recovery Email - CreekTube", "recovery email verification", to_email=profile.recovery_email)
 
         return Response({"detail": "New verification code sent"}, status=200)
 
@@ -553,10 +549,7 @@ class RequestPasswordChange(APIView):
             }, status=400)
 
         code = _create_security_code(request.user, "password_change")
-        try:
-            _send_code_email(request.user, code, "Verify Password Change - CreekTube", "password change")
-        except Exception:
-            pass
+        _send_code_email(request.user, code, "Verify Password Change - CreekTube", "password change")
 
         return Response({
             "detail": "Verification code sent to your recovery email",
@@ -607,10 +600,7 @@ class ForgotPasswordRequest(APIView):
             token = default_token_generator.make_token(user)
             uid = urlsafe_base64_encode(force_bytes(user.pk))
             reset_link = f"{settings.FRONTEND_URL}/reset-password/{uid}/{token}/"
-            try:
-                _send_forgot_password_email(user, reset_link)
-            except Exception:
-                pass
+            _send_forgot_password_email(user, reset_link)
             return Response({
                 "detail": "If an account exists with this email, a reset link has been sent to your account email.",
                 "method": "email_link",
@@ -618,10 +608,7 @@ class ForgotPasswordRequest(APIView):
             }, status=200)
 
         code = _create_security_code(user, "password_reset")
-        try:
-            _send_code_email(user, code, "Reset Your CreekTube Password", "password reset")
-        except Exception:
-            pass
+        _send_code_email(user, code, "Reset Your CreekTube Password", "password reset")
 
         return Response({
             "detail": "If an account exists with this email, a recovery code has been sent.",
@@ -677,10 +664,7 @@ class ForgotPasswordResendCode(APIView):
             return Response({"error": "No verified recovery email found"}, status=400)
 
         code = _create_security_code(user, "password_reset")
-        try:
-            _send_code_email(user, code, "Reset Your CreekTube Password", "password reset")
-        except Exception:
-            pass
+        _send_code_email(user, code, "Reset Your CreekTube Password", "password reset")
 
         return Response({"detail": "New verification code sent"}, status=200)
 
@@ -708,4 +692,8 @@ def _send_forgot_password_email(user, reset_link):
     """
     email_message = EmailMultiAlternatives(subject=subject, body=text_content, from_email=settings.DEFAULT_FROM_EMAIL, to=[user.email])
     email_message.attach_alternative(html_content, "text/html")
-    email_message.send(fail_silently=False)
+    try:
+        email_message.send(fail_silently=False)
+    except Exception as e:
+        import logging
+        logging.getLogger(__name__).error(f"Failed to send password reset email to {user.email}: {e}")
