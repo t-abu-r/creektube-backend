@@ -1110,7 +1110,7 @@ class UploadSnip(APIView):
             title=title,
             description=request.data.get("description", ""),
             video=video_url,
-            is_approved=True,
+            is_approved=False,
         )
 
         record_upload(request.user)
