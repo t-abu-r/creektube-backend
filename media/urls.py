@@ -42,4 +42,9 @@ urlpatterns = [
     path("snip/like/", LikeSnip.as_view(), name="LikeSnip"),
     path("snip/own/", GetOwnSnips.as_view(), name="GetOwnSnips"),
     path("snip/delete/<int:snip_id>/", SnipDelete.as_view(), name="SnipDelete"),
+    path("snip/comments/", SnipCommentList.as_view(), name="SnipCommentList"),
+    path("snip/comment/", UploadSnipComment.as_view(), name="UploadSnipComment"),
+    path("snip/pincomment/", PinSnipComment.as_view(), name="PinSnipComment"),
+    path("snip/studio/comments/", SnipStudioComments.as_view(), name="SnipStudioComments"),
+    path("snip/trackretention/", TrackSnipRetention.as_view(), name="TrackSnipRetention"),
 ]

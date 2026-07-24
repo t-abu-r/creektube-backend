@@ -1224,3 +1224,133 @@ class SnipDelete(APIView):
         snip = get_object_or_404(Snip, id=snip_id, author=request.user)
         snip.delete()
         return Response(status=204)
+
+
+# ---------------------------
+# Snip Comments
+# ---------------------------
+@method_decorator(csrf_exempt, name='dispatch')
+class SnipCommentList(APIView):
+    def get(self, request):
+        snip_id = request.query_params.get('snip_id')
+        if not snip_id:
+            return Response({'detail': 'snip_id required'}, status=status.HTTP_400_BAD_REQUEST)
+
+        snip = get_object_or_404(Snip, id=snip_id)
+        top_level = Comment.objects.filter(snip=snip, parent=None).select_related('author').order_by('-is_pinned', '-timestamp')
+        serializer = CommentSerializer(top_level, many=True, context={'request': request})
+        return Response(serializer.data, status=status.HTTP_200_OK)
+
+
+@method_decorator(csrf_exempt, name='dispatch')
+class UploadSnipComment(APIView):
+    permission_classes = [IsAuthenticated]
+
+    def post(self, request):
+        author = request.user
+        comment_text = request.data.get('comment')
+        snip_id = request.data.get('snip_id')
+        parent_id = request.data.get('parent_id')
+
+        if not comment_text:
+            return Response({'detail': 'No comment provided'}, status=status.HTTP_400_BAD_REQUEST)
+
+        snip = get_object_or_404(Snip, id=snip_id)
+
+        cutoff = timezone.now() - COMMENT_SPAM_WINDOW
+        recent = Comment.objects.filter(
+            author=author, snip=snip, timestamp__gte=cutoff
+        ).count()
+        if recent >= COMMENT_SPAM_LIMIT:
+            return Response(
+                {'detail': 'You are posting too many comments. Please wait before posting again.'},
+                status=status.HTTP_429_TOO_MANY_REQUESTS
+            )
+
+        parent = None
+        if parent_id:
+            parent = get_object_or_404(Comment, id=parent_id, snip=snip)
+
+        comment = Comment.objects.create(author=author, snip=snip, text=comment_text, parent=parent)
+        return Response({
+            'detail': 'Comment added',
+            'comment': CommentSerializer(comment, context={'request': request}).data
+        }, status=status.HTTP_201_CREATED)
+
+
+@method_decorator(csrf_exempt, name='dispatch')
+class PinSnipComment(APIView):
+    permission_classes = [IsAuthenticated]
+
+    def post(self, request):
+        comment_id = request.data.get("comment_id")
+        if not comment_id:
+            return Response({"detail": "Comment ID required"}, status=status.HTTP_400_BAD_REQUEST)
+
+        comment = get_object_or_404(Comment, id=comment_id)
+        if not comment.snip or comment.snip.author != request.user:
+            return Response({"detail": "Only the snip author can pin comments"}, status=status.HTTP_403_FORBIDDEN)
+
+        comment.is_pinned = not comment.is_pinned
+        comment.save(update_fields=['is_pinned'])
+        return Response({"is_pinned": comment.is_pinned}, status=status.HTTP_200_OK)
+
+
+class SnipStudioComments(APIView):
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request):
+        snips = Snip.objects.filter(author=request.user)
+        comments = Comment.objects.filter(snip__in=snips).select_related('author', 'snip').order_by('-timestamp')
+        data = [{
+            'id': c.id,
+            'text': c.text,
+            'author': c.author.username,
+            'snip_id': c.snip.id,
+            'snip_title': c.snip.title,
+            'timestamp': c.timestamp,
+            'is_pinned': c.is_pinned,
+        } for c in comments]
+        return Response(data, status=200)
+
+    def delete(self, request):
+        comment_id = request.query_params.get('id')
+        if not comment_id:
+            return Response({'detail': 'Comment ID required'}, status=400)
+        try:
+            comment = Comment.objects.select_related('snip').get(
+                id=comment_id, snip__author=request.user
+            )
+            comment.delete()
+            return Response(status=204)
+        except Comment.DoesNotExist:
+            return Response({'detail': 'Comment not found'}, status=404)
+
+
+# ---------------------------
+# Snip Retention Tracking
+# ---------------------------
+class TrackSnipRetention(APIView):
+    permission_classes = [IsAuthenticated]
+
+    def post(self, request):
+        snip_id = request.data.get("snip_id")
+        duration = request.data.get("duration", 0)
+
+        if not snip_id:
+            return Response({"detail": "Snip ID required"}, status=400)
+
+        try:
+            duration = int(duration)
+        except (TypeError, ValueError):
+            duration = 0
+
+        duration = max(0, min(duration, 86400))
+
+        snip = get_object_or_404(Snip, id=snip_id)
+        WatchEvent.objects.create(
+            user=request.user,
+            video=None,
+            duration_watched=duration,
+        )
+        return Response({"status": "ok"}, status=200)

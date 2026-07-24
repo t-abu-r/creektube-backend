@@ -73,7 +73,8 @@ class SnipLike(models.Model):
 
 class Comment(models.Model):
     author = models.ForeignKey(User, on_delete=models.CASCADE)
-    video = models.ForeignKey(Video, related_name="comments", on_delete=models.CASCADE, null=True)
+    video = models.ForeignKey(Video, related_name="comments", on_delete=models.CASCADE, null=True, blank=True)
+    snip = models.ForeignKey('Snip', related_name="comments", on_delete=models.CASCADE, null=True, blank=True)
     text = models.TextField(max_length=500)
     timestamp = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True, null=True)

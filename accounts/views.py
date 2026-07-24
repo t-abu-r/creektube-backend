@@ -15,13 +15,14 @@ from .tokens import account_activation_token
 from django.contrib.auth import get_user_model
 from .models import Profile, PlanChoices
 from urllib.parse import quote
-from django.conf import settings
 from django.utils.encoding import force_bytes, force_str
 from django.utils.http import urlsafe_base64_encode, urlsafe_base64_decode
 from urllib.parse import unquote
 from media.models import MediaProfile
 from media.Serializers import MediaProfileSerializer
 import os
+from django.core.mail import EmailMultiAlternatives
+from django.conf import settings
 from datetime import timedelta
 # from cloudinary.utils import cloudinary_url  # Commented out - using local storage
 
@@ -288,6 +289,60 @@ class JWTResetPasswordView(APIView):
         )
 
         return Response({"detail": "Email Sent!"}, status=status.HTTP_200_OK)
+class ChangePasswordView(APIView):
+    permission_classes = [IsAuthenticated]
+
+    def post(self, request):
+        current_password = request.data.get("current_password")
+        new_password = request.data.get("new_password")
+
+        if not current_password or not new_password:
+            return Response({"error": "Current password and new password are required"}, status=400)
+
+        if not request.user.check_password(current_password):
+            return Response({"error": "Current password is incorrect"}, status=400)
+
+        if len(new_password) < 8:
+            return Response({"error": "New password must be at least 8 characters"}, status=400)
+
+        if current_password == new_password:
+            return Response({"error": "New password must be different from current password"}, status=400)
+
+        request.user.set_password(new_password)
+        request.user.save()
+
+        return Response({"detail": "Password changed successfully"}, status=200)
+
+
+class ConfirmResetPasswordView(APIView):
+    permission_classes = [AllowAny]
+
+    def post(self, request):
+        token = request.data.get("token")
+        uidb64 = request.data.get("uid")
+        new_password = request.data.get("new_password")
+
+        if not token or not uidb64 or not new_password:
+            return Response({"error": "Token, uid, and new password are required"}, status=400)
+
+        if len(new_password) < 8:
+            return Response({"error": "Password must be at least 8 characters"}, status=400)
+
+        try:
+            uid = force_str(urlsafe_base64_decode(uidb64))
+            user = User.objects.get(pk=uid)
+        except (TypeError, ValueError, OverflowError, User.DoesNotExist):
+            return Response({"error": "Invalid or expired reset link"}, status=400)
+
+        if not default_token_generator.check_token(user, token):
+            return Response({"error": "Invalid or expired reset link"}, status=400)
+
+        user.set_password(new_password)
+        user.save()
+
+        return Response({"detail": "Password has been reset successfully"}, status=200)
+
+
 class CheckUserPLan(APIView):
     permission_classes = [IsAuthenticated]
     def get(self, request):
@@ -392,3 +447,92 @@ class CookieTokenLogoutView(APIView):
         response = Response({"detail": "Logged out successfully"}, status=205)
         _clear_auth_cookies(response)
         return response
+
+
+class ResetPasswordView(APIView):
+    permission_classes = [AllowAny]
+
+    def get(self, request):
+        token = request.query_params.get("token")
+        uidb64 = request.query_params.get("uid")
+
+        if not token or not uidb64:
+            return Response({"error": "Missing token or user ID"}, status=400)
+
+        try:
+            uid = force_str(urlsafe_base64_decode(uidb64))
+            user = User.objects.get(pk=uid)
+        except (TypeError, ValueError, OverflowError, User.DoesNotExist):
+            return Response({"error": "Invalid or expired token"}, status=400)
+
+        if default_token_generator.check_token(user, token):
+            return Response({"token": token, "uid": uidb64}, status=200)
+        else:
+            return Response({"error": "Invalid or expired token"}, status=400)  
+    
+    def post(self, request):
+        email = request.data.get("email")
+
+        if not email:
+            return Response({"error": "Email is required"}, status=400)
+
+        try:
+            user = User.objects.get(email=email)
+        except User.DoesNotExist:
+            return Response({"detail": "Password reset email has been sent."}, status=200)
+
+        token = default_token_generator.make_token(user)
+        uid = urlsafe_base64_encode(force_bytes(user.pk))
+
+        reset_link = f"{settings.FRONTEND_URL}/reset-password/{uid}/{token}/"
+
+
+
+        try:
+            subject = "Reset Your CreekTube Password"
+
+            text_content = (
+                f"Hi,\n\n"
+                f"We received a request to reset your CreekTube password. "
+                f"Click the link below to choose a new one:\n\n"
+                f"{reset_link}\n\n"
+                f"If you didn't request this, you can safely ignore this email — "
+                f"your password will remain unchanged.\n\n"
+                f"This link will expire in 24 hours.\n\n"
+                f"— The CreekTube Team"
+        )
+
+            html_content = f"""
+            <div style="font-family: Arial, sans-serif; max-width: 480px; margin: auto; padding: 24px; border: 1px solid #eee; border-radius: 8px;">
+                <h2 style="color: #1a1a1a;">CreekTube</h2>
+                <p>Hi,</p>
+                <p>We received a request to reset your CreekTube password. Click the button below to choose a new one:</p>
+                <p style="text-align: center; margin: 32px 0;">
+                    <a href="{reset_link}" style="background-color: #ff3d3d; color: #fff; padding: 12px 24px; text-decoration: none; border-radius: 6px; font-weight: bold;">
+                        Reset Password
+                    </a>
+                </p>
+                <p style="font-size: 13px; color: #666;">
+                    If the button doesn't work, copy and paste this link into your browser:<br>
+                    <a href="{reset_link}">{reset_link}</a>
+                </p>
+                <p style="font-size: 13px; color: #666;">This link will expire in 24 hours. If you didn't request this, you can safely ignore this email.</p>
+                <hr style="border: none; border-top: 1px solid #eee; margin: 24px 0;">
+                <p style="font-size: 12px; color: #999;">— The CreekTube Team</p>
+            </div>
+            """
+
+            email_message = EmailMultiAlternatives(
+                subject=subject,
+                body=text_content,
+                from_email=settings.DEFAULT_FROM_EMAIL,
+                to=[email],
+            )
+            email_message.attach_alternative(html_content, "text/html")
+            email_message.send(fail_silently=False)
+            return Response({"detail": "Password reset email has been sent."}, status=200)
+
+        except Exception as e:
+            return Response({"error": f"Failed to send email: {str(e)}"}, status=500)
+
+        return Response({"detail": "Password reset email has been sent."}, status=200)
