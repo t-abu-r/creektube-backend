@@ -32,8 +32,10 @@ class Video(models.Model):
     )
     title = models.CharField(max_length=100)
     description = models.TextField()
-    thumbnail = models.TextField()  # Assuming this is a URL or path to the thumbnail file
-    video = models.TextField()  # Assuming this is a URL or path to the video file
+    thumbnail = models.TextField(blank=True, default="")
+    video = models.TextField()
+    video_public_id = models.CharField(max_length=255, blank=True, default="")
+    thumbnail_public_id = models.CharField(max_length=255, blank=True, default="")
     timestamp = models.DateTimeField(auto_now_add=True)
     is_approved = models.BooleanField(default=False)
     view_count = models.PositiveIntegerField(default=0)
@@ -47,6 +49,9 @@ class Snip(models.Model):
     title = models.CharField(max_length=100)
     description = models.TextField(blank=True, default="")
     video = models.TextField()
+    thumbnail = models.TextField(blank=True, default="")
+    video_public_id = models.CharField(max_length=255, blank=True, default="")
+    thumbnail_public_id = models.CharField(max_length=255, blank=True, default="")
     timestamp = models.DateTimeField(auto_now_add=True)
     is_approved = models.BooleanField(default=False)
     view_count = models.PositiveIntegerField(default=0)
