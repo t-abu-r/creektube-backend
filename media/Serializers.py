@@ -112,12 +112,13 @@ class SnipSerializer(serializers.ModelSerializer):
     author_id = serializers.SerializerMethodField()
     author_avatar = serializers.SerializerMethodField()
     video = serializers.SerializerMethodField()
+    thumbnail = serializers.SerializerMethodField()
     is_liked = serializers.SerializerMethodField()
 
     class Meta:
         model = Snip
         fields = [
-            "id", "title", "description", "video", "timestamp",
+            "id", "title", "description", "video", "thumbnail", "timestamp",
             "is_approved", "author", "author_id", "author_avatar",
             "view_count", "like_count", "is_liked",
         ]
@@ -132,6 +133,11 @@ class SnipSerializer(serializers.ModelSerializer):
         if not obj.video:
             return None
         return obj.video
+
+    def get_thumbnail(self, obj):
+        if not obj.thumbnail:
+            return None
+        return obj.thumbnail
 
     def get_author_avatar(self, obj):
         try:

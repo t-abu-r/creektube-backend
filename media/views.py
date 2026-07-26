@@ -13,6 +13,9 @@ from .models import (Video, Comment, CommentLike, CategoryVideo, MediaProfile, L
                      DisPike, Creek, WatchEvent, UploadRateLimit, Notification, Snip, SnipLike)
 from django.db.models import Count, Q
 from . import ranking
+import logging
+
+logger = logging.getLogger(__name__)
 from django.views.decorators.csrf import csrf_exempt
 from django.utils.decorators import method_decorator
 from rest_framework.parsers import MultiPartParser, FormParser, JSONParser
@@ -843,9 +846,9 @@ class UploadVideo(APIView):
 
         author = request.user
         video_url = request.data.get("video_url")
-        video_public_id = request.data.get("video_public_id")
+        video_public_id = request.data.get("video_public_id", "")
         thumbnail_url = request.data.get("thumbnail_url")
-        thumbnail_public_id = request.data.get("thumbnail_public_id")
+        thumbnail_public_id = request.data.get("thumbnail_public_id", "")
 
         if video_url and video_public_id and thumbnail_url and thumbnail_public_id:
             video_file = video_url
@@ -861,21 +864,38 @@ class UploadVideo(APIView):
         if not video_file:
             return Response({"message": "No video provided"}, status=400)
 
+        # Auto-generate thumbnail from Cloudinary video URL if none provided
+        if not thumbnail_file and video_url and video_public_id:
+            from django.conf import settings
+            cloud_name = getattr(settings, 'CLOUDINARY_STORAGE', {}).get('CLOUD_NAME', '')
+            if cloud_name:
+                thumbnail_file = f"https://res.cloudinary.com/{cloud_name}/video/upload/so_0,e_preview/{video_public_id}.jpg"
+
         category_obj, _ = CategoryVideo.objects.get_or_create(
             slug=category,
             defaults={"name": category.replace("-", " ").title()},
         )
 
-        video_instance = Video.objects.create(
-            video=video_file,
-            author=author,
-            title=title,
-            category=category_obj,
-            description=description,
-            thumbnail=thumbnail_file,
-            timestamp=timezone.now(),
-            is_approved=False,
-        )
+        try:
+            video_instance = Video.objects.create(
+                video=video_file,
+                author=author,
+                title=title,
+                category=category_obj,
+                description=description,
+                thumbnail=thumbnail_file or "",
+                video_public_id=video_public_id,
+                thumbnail_public_id=thumbnail_public_id,
+                timestamp=timezone.now(),
+                is_approved=False,
+            )
+        except Exception as e:
+            # Cleanup orphaned Cloudinary uploads if DB save fails
+            from .cloudinary_utils import delete_cloudinary_resource
+            delete_cloudinary_resource(video_public_id, "video")
+            delete_cloudinary_resource(thumbnail_public_id, "image")
+            logger.error("UploadVideo DB save failed for %s: %s", author.username, e)
+            return Response({"message": "Upload failed. Please try again."}, status=500)
 
         record_upload(request.user)
 
@@ -1088,6 +1108,9 @@ class UploadSnip(APIView):
             )
 
         video_url = request.data.get("video_url")
+        video_public_id = request.data.get("video_public_id", "")
+        thumbnail_url = request.data.get("thumbnail_url", "")
+        thumbnail_public_id = request.data.get("thumbnail_public_id", "")
         video_file = request.FILES.get("video") or request.FILES.get("file") or request.data.get("video")
 
         if not video_url and video_file and not isinstance(video_file, str):
@@ -1105,13 +1128,30 @@ class UploadSnip(APIView):
         if not title:
             return Response({"message": "Title is required"}, status=400)
 
-        snip = Snip.objects.create(
-            author=request.user,
-            title=title,
-            description=request.data.get("description", ""),
-            video=video_url,
-            is_approved=False,
-        )
+        # Auto-generate thumbnail from Cloudinary video URL if none provided
+        if not thumbnail_url and video_url and video_public_id:
+            from django.conf import settings
+            cloud_name = getattr(settings, 'CLOUDINARY_STORAGE', {}).get('CLOUD_NAME', '')
+            if cloud_name:
+                thumbnail_url = f"https://res.cloudinary.com/{cloud_name}/video/upload/so_0,e_preview/{video_public_id}.jpg"
+
+        try:
+            snip = Snip.objects.create(
+                author=request.user,
+                title=title,
+                description=request.data.get("description", ""),
+                video=video_url,
+                thumbnail=thumbnail_url,
+                video_public_id=video_public_id,
+                thumbnail_public_id=thumbnail_public_id,
+                is_approved=False,
+            )
+        except Exception as e:
+            from .cloudinary_utils import delete_cloudinary_resource
+            delete_cloudinary_resource(video_public_id, "video")
+            delete_cloudinary_resource(thumbnail_public_id, "image")
+            logger.error("UploadSnip DB save failed for %s: %s", request.user.username, e)
+            return Response({"message": "Upload failed. Please try again."}, status=500)
 
         record_upload(request.user)
         serializer = SnipSerializer(snip, context={"request": request})
