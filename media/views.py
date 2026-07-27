@@ -28,6 +28,8 @@ from datetime import timedelta
 UPLOAD_RATE_LIMIT = 3  # max uploads per hour
 UPLOAD_RATE_WINDOW = timedelta(hours=1)
 VIEW_DEDUP_WINDOW = timedelta(minutes=30)
+VIEW_GAP = timedelta(minutes=2)  # min time between views from same user on same video
+VIEW_MAX_PER_USER = 6  # max views per user per video/snip
 COMMENT_SPAM_LIMIT = 6  # max comments per video
 COMMENT_SPAM_WINDOW = timedelta(minutes=2)
 
@@ -46,21 +48,56 @@ def record_upload(user):
     UploadRateLimit.objects.create(user=user)
 
 
-def record_view(user, video):
+def record_view(user, video=None, snip=None):
     """
-    Record a watch event with spam prevention.
-    Returns True if this counts as a new view (dedup), False if duplicate.
+    Record a view with spam prevention:
+    - Enforce time gap between views from same user on same video/snip
+    - Max 6 views per user per video/snip
+    - Delete excess views beyond 6
+    Returns True if this counts as a new view, False if blocked/duplicate.
     """
-    # Check for duplicate within dedup window
-    cutoff = timezone.now() - VIEW_DEDUP_WINDOW
-    is_duplicate = WatchEvent.objects.filter(
-        user=user, video=video, timestamp__gte=cutoff
-    ).exists()
+    if not user or not user.is_authenticated:
+        return False
 
-    if not is_duplicate:
-        Video.objects.filter(pk=video.pk).update(view_count=video.view_count + 1)
+    if video:
+        existing = WatchEvent.objects.filter(user=user, video=video)
+    elif snip:
+        existing = WatchEvent.objects.filter(user=user, snip=snip)
+    else:
+        return False
 
-    return not is_duplicate
+    # Enforce time gap: must be at least VIEW_GAP since last view
+    last_event = existing.order_by('-timestamp').first()
+    if last_event:
+        time_since_last = timezone.now() - last_event.timestamp
+        if time_since_last < VIEW_GAP:
+            return False
+
+    # Enforce max views per user: count existing views
+    view_count = existing.count()
+
+    if view_count >= VIEW_MAX_PER_USER:
+        # Delete the oldest view to make room (keep most recent 5, add 1 new)
+        oldest = existing.order_by('timestamp').first()
+        if oldest:
+            oldest.delete()
+        # Update the counter field
+        if video:
+            unique_viewers = WatchEvent.objects.filter(video=video).values('user').distinct().count()
+            Video.objects.filter(pk=video.pk).update(view_count=unique_viewers)
+        elif snip:
+            unique_viewers = WatchEvent.objects.filter(snip=snip).values('user').distinct().count()
+            Snip.objects.filter(pk=snip.pk).update(view_count=unique_viewers)
+        return True
+
+    # New view — increment and update unique viewer count
+    if video:
+        unique_viewers = WatchEvent.objects.filter(video=video).values('user').distinct().count()
+        Video.objects.filter(pk=video.pk).update(view_count=unique_viewers + 1)
+    elif snip:
+        unique_viewers = WatchEvent.objects.filter(snip=snip).values('user').distinct().count()
+        Snip.objects.filter(pk=snip.pk).update(view_count=unique_viewers + 1)
+    return True
 
 
 def get_or_create_session_id(user):
@@ -446,9 +483,8 @@ class LoginWatchVideo(APIView):
             profile.save()
 
         # Record watch event with spam prevention
-        # Check view dedup BEFORE creating the event
         session_id = get_or_create_session_id(request.user)
-        record_view(request.user, video)
+        is_new_view = record_view(request.user, video=video)
         WatchEvent.objects.create(
             user=request.user,
             video=video,
@@ -602,6 +638,14 @@ class TrackRetention(APIView):
         if recent:
             recent.duration_watched = max(recent.duration_watched, duration)
             recent.save(update_fields=['duration_watched'])
+        else:
+            # Create a new event if none exists for this session
+            WatchEvent.objects.create(
+                user=request.user,
+                video=video,
+                session_id=session_id,
+                duration_watched=duration,
+            )
 
         return Response({"status": "ok"}, status=200)
 
@@ -1244,8 +1288,18 @@ class WatchSnip(APIView):
         if snip.visibility == "private" and snip.author != request.user:
             return Response({"detail": "Snip not found"}, status=404)
 
-        Snip.objects.filter(id=snip.id).update(view_count=models.F("view_count") + 1)
-        snip.refresh_from_db(fields=["view_count"])
+        # Record view with spam prevention (authenticated users only)
+        if request.user.is_authenticated:
+            record_view(request.user, snip=snip)
+            WatchEvent.objects.create(
+                user=request.user,
+                snip=snip,
+                session_id=get_or_create_session_id(request.user),
+            )
+        else:
+            # Guest views: simple increment with no spam tracking
+            Snip.objects.filter(id=snip.id).update(view_count=models.F("view_count") + 1)
+            snip.refresh_from_db(fields=["view_count"])
 
         is_liked = False
         if request.user.is_authenticated:
@@ -1418,9 +1472,116 @@ class TrackSnipRetention(APIView):
         duration = max(0, min(duration, 86400))
 
         snip = get_object_or_404(Snip, id=snip_id)
-        WatchEvent.objects.create(
-            user=request.user,
-            video=None,
-            duration_watched=duration,
+        session_id = get_or_create_session_id(request.user)
+
+        # Update the most recent WatchEvent for this user+snip+session
+        recent = (
+            WatchEvent.objects.filter(user=request.user, snip=snip, session_id=session_id)
+            .order_by('-timestamp')
+            .first()
         )
+        if recent:
+            recent.duration_watched = max(recent.duration_watched, duration)
+            recent.save(update_fields=['duration_watched'])
+        else:
+            WatchEvent.objects.create(
+                user=request.user,
+                snip=snip,
+                session_id=session_id,
+                duration_watched=duration,
+            )
+
         return Response({"status": "ok"}, status=200)
+
+
+# ---------------------------
+# Analytics API
+# ---------------------------
+from django.db.models.functions import TruncDate
+
+
+class ChannelAnalytics(APIView):
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request):
+        user = request.user
+        period = request.query_params.get("period", "7d")
+
+        if period == "24h":
+            since = timezone.now() - timedelta(hours=24)
+        elif period == "30d":
+            since = timezone.now() - timedelta(days=30)
+        elif period == "90d":
+            since = timezone.now() - timedelta(days=90)
+        else:
+            since = timezone.now() - timedelta(days=7)
+
+        user_videos = Video.objects.filter(author=user)
+        user_snips = Snip.objects.filter(author=user)
+        all_video_ids = user_videos.values_list('id', flat=True)
+        all_snip_ids = user_snips.values_list('id', flat=True)
+
+        total_video_views = user_videos.aggregate(s=Sum('view_count'))['s'] or 0
+        total_snip_views = user_snips.aggregate(s=Sum('view_count'))['s'] or 0
+
+        video_views_in_period = list(
+            WatchEvent.objects.filter(video_id__in=all_video_ids, timestamp__gte=since)
+            .annotate(date=TruncDate('timestamp'))
+            .values('date')
+            .annotate(total_views=Count('id'), unique_viewers=Count('user', distinct=True))
+            .order_by('date')
+        )
+
+        snip_views_in_period = list(
+            WatchEvent.objects.filter(snip_id__in=all_snip_ids, timestamp__gte=since)
+            .annotate(date=TruncDate('timestamp'))
+            .values('date')
+            .annotate(total_views=Count('id'), unique_viewers=Count('user', distinct=True))
+            .order_by('date')
+        )
+
+        video_retention = list(
+            WatchEvent.objects.filter(video_id__in=all_video_ids, timestamp__gte=since)
+            .values('video__id', 'video__title')
+            .annotate(avg_duration=Avg('duration_watched'), total_views=Count('id'), unique_viewers=Count('user', distinct=True))
+            .order_by('-total_views')[:10]
+        )
+
+        snip_retention = list(
+            WatchEvent.objects.filter(snip_id__in=all_snip_ids, timestamp__gte=since)
+            .values('snip__id', 'snip__title')
+            .annotate(avg_duration=Avg('duration_watched'), total_views=Count('id'), unique_viewers=Count('user', distinct=True))
+            .order_by('-total_views')[:10]
+        )
+
+        top_videos = list(user_videos.order_by('-view_count')[:5].values('id', 'title', 'view_count', 'timestamp'))
+        top_snips = list(user_snips.order_by('-view_count')[:5].values('id', 'title', 'view_count', 'timestamp'))
+
+        return Response({
+            "totals": {
+                "video_views": total_video_views,
+                "snip_views": total_snip_views,
+                "total_views": total_video_views + total_snip_views,
+                "video_count": user_videos.count(),
+                "snip_count": user_snips.count(),
+            },
+            "views_over_time": {
+                "videos": video_views_in_period,
+                "snips": snip_views_in_period,
+            },
+            "retention": {
+                "videos": [
+                    {"id": r['video__id'], "title": r['video__title'],
+                     "avg_duration": round(r['avg_duration'] or 0, 1),
+                     "total_views": r['total_views'], "unique_viewers": r['unique_viewers']}
+                    for r in video_retention
+                ],
+                "snips": [
+                    {"id": r['snip__id'], "title": r['snip__title'],
+                     "avg_duration": round(r['avg_duration'] or 0, 1),
+                     "total_views": r['total_views'], "unique_viewers": r['unique_viewers']}
+                    for r in snip_retention
+                ],
+            },
+            "top_content": {"videos": top_videos, "snips": top_snips},
+        }, status=200)

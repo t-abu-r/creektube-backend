@@ -142,9 +142,12 @@ class Creek(models.Model):
 
 
 class WatchEvent(models.Model):
-    """Records individual watch sessions for co-watch computation and retention tracking."""
+    """Records individual watch sessions for retention tracking and spam prevention.
+    Each user can have at most 6 views per video/snip, with time gaps enforced.
+    Excess views are deleted automatically."""
     user = models.ForeignKey(User, on_delete=models.CASCADE, null=True, blank=True)
-    video = models.ForeignKey(Video, on_delete=models.CASCADE, related_name='watch_events')
+    video = models.ForeignKey(Video, on_delete=models.CASCADE, related_name='watch_events', null=True, blank=True)
+    snip = models.ForeignKey('Snip', on_delete=models.CASCADE, related_name='watch_events', null=True, blank=True)
     timestamp = models.DateTimeField(auto_now_add=True)
     duration_watched = models.PositiveIntegerField(default=0, help_text="Seconds watched")
     session_id = models.CharField(max_length=64, blank=True, default="",
@@ -153,13 +156,16 @@ class WatchEvent(models.Model):
     class Meta:
         indexes = [
             models.Index(fields=['video', 'timestamp']),
+            models.Index(fields=['snip', 'timestamp']),
             models.Index(fields=['user', 'video']),
+            models.Index(fields=['user', 'snip']),
             models.Index(fields=['session_id']),
         ]
 
     def __str__(self):
         user_str = self.user.username if self.user else "anon"
-        return f"{user_str} watched {self.video.title} ({self.duration_watched}s)"
+        target = self.video.title if self.video else (self.snip.title if self.snip else "?")
+        return f"{user_str} watched {target} ({self.duration_watched}s)"
 
 
 class UploadRateLimit(models.Model):
