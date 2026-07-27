@@ -22,6 +22,12 @@ class MediaProfile(models.Model):
 
 
 class Video(models.Model):
+    VISIBILITY_CHOICES = [
+        ("public", "Public"),
+        ("unlisted", "Unlisted"),
+        ("private", "Private"),
+    ]
+
     author = models.ForeignKey(User, on_delete=models.CASCADE)
     category = models.ForeignKey(
         CategoryVideo,
@@ -36,6 +42,7 @@ class Video(models.Model):
     video = models.TextField()
     video_public_id = models.CharField(max_length=255, blank=True, default="")
     thumbnail_public_id = models.CharField(max_length=255, blank=True, default="")
+    visibility = models.CharField(max_length=10, choices=VISIBILITY_CHOICES, default="public")
     timestamp = models.DateTimeField(auto_now_add=True)
     is_approved = models.BooleanField(default=False)
     view_count = models.PositiveIntegerField(default=0)
@@ -45,6 +52,12 @@ class Video(models.Model):
 
 
 class Snip(models.Model):
+    VISIBILITY_CHOICES = [
+        ("public", "Public"),
+        ("unlisted", "Unlisted"),
+        ("private", "Private"),
+    ]
+
     author = models.ForeignKey(User, on_delete=models.CASCADE)
     title = models.CharField(max_length=100)
     description = models.TextField(blank=True, default="")
@@ -52,6 +65,7 @@ class Snip(models.Model):
     thumbnail = models.TextField(blank=True, default="")
     video_public_id = models.CharField(max_length=255, blank=True, default="")
     thumbnail_public_id = models.CharField(max_length=255, blank=True, default="")
+    visibility = models.CharField(max_length=10, choices=VISIBILITY_CHOICES, default="public")
     timestamp = models.DateTimeField(auto_now_add=True)
     is_approved = models.BooleanField(default=False)
     view_count = models.PositiveIntegerField(default=0)

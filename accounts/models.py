@@ -18,7 +18,7 @@ class Profile(models.Model):
     # Use ImageField for all environments (local storage)
     avatar = models.ImageField(upload_to='avatars/', blank=True, null=True)
 
-    bio = models.TextField(blank=True, null=True)
+    bio = models.TextField(blank=True, null=True, max_length=500)
     plan = models.CharField(
         max_length=10,
         choices=PlanChoices.choices,

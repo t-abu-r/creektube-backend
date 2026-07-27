@@ -153,11 +153,29 @@ class JWTRegisterView(APIView):
     permission_classes = [AllowAny]
 
     def post(self, request):
+        import re
         email = request.data.get("email")
         username = request.data.get("username")
         password = request.data.get("password")
         if not email or not username or not password:
             return Response({"error": "Email, username, and password are required"}, status=400)
+
+        # Username validation: 3-30 chars, alphanumeric + underscores only
+        if len(username) < 3:
+            return Response({"error": "Username must be at least 3 characters"}, status=400)
+        if len(username) > 30:
+            return Response({"error": "Username must be 30 characters or fewer"}, status=400)
+        if not re.match(r'^[a-zA-Z0-9_]+$', username):
+            return Response({"error": "Username can only contain letters, numbers, and underscores"}, status=400)
+
+        # Password validation: min 8 chars, must contain letter + number
+        if len(password) < 8:
+            return Response({"error": "Password must be at least 8 characters"}, status=400)
+        if not re.search(r'[A-Za-z]', password):
+            return Response({"error": "Password must contain at least one letter"}, status=400)
+        if not re.search(r'[0-9]', password):
+            return Response({"error": "Password must contain at least one number"}, status=400)
+
         if User.objects.filter(username=username).exists() or User.objects.filter(email=email).exists():
             return Response({"message": "If an account exists, a verification email has been sent"}, status=200)
         user = User.objects.create_user(username=username, email=email, password=password, is_active=True)
@@ -225,6 +243,13 @@ class UpdateProfileView(APIView):
 
         new_username = request.data.get("username")
         if new_username and new_username != user.username:
+            import re
+            if len(new_username) < 3:
+                return Response({"error": "Username must be at least 3 characters"}, status=400)
+            if len(new_username) > 30:
+                return Response({"error": "Username must be 30 characters or fewer"}, status=400)
+            if not re.match(r'^[a-zA-Z0-9_]+$', new_username):
+                return Response({"error": "Username can only contain letters, numbers, and underscores"}, status=400)
             if User.objects.filter(username=new_username).exists():
                 return Response({"error": "Username already taken"}, status=400)
             user.username = new_username
@@ -248,6 +273,8 @@ class UpdateProfileView(APIView):
         bio = request.data.get("bio")
         avatar = request.FILES.get("avatar")
         if bio is not None:
+            if len(bio) > 500:
+                return Response({"error": "Bio must be 500 characters or fewer"}, status=400)
             profile.bio = bio
         if avatar:
             profile.avatar = avatar

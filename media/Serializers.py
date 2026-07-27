@@ -118,7 +118,7 @@ class SnipSerializer(serializers.ModelSerializer):
     class Meta:
         model = Snip
         fields = [
-            "id", "title", "description", "video", "thumbnail", "timestamp",
+            "id", "title", "description", "video", "thumbnail", "visibility", "timestamp",
             "is_approved", "author", "author_id", "author_avatar",
             "view_count", "like_count", "is_liked",
         ]
@@ -172,7 +172,7 @@ class VideoSerializer(serializers.ModelSerializer):
     class Meta:
         model = Video
         fields = [
-            "id", "category", "category_name", "title", "description", "thumbnail", "video",
+            "id", "category", "category_name", "title", "description", "thumbnail", "video", "visibility",
             "timestamp", "is_approved", "author", "author_id", "author_avatar",
             "comments", "view_count",
         ]

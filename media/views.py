@@ -125,7 +125,7 @@ class LoginGetVideo(APIView):
         category_param = request.query_params.get('category', '').strip().lower()
 
         if category_param in ['shortform-videos', 'snips']:
-            snips = Snip.objects.filter(is_approved=True).select_related('author').order_by('-timestamp')
+            snips = Snip.objects.filter(is_approved=True, visibility="public").select_related('author').order_by('-timestamp')
             total = snips.count()
             try:
                 page = max(int(request.query_params.get('page', 1)), 1)
@@ -171,7 +171,7 @@ class LoginGetVideo(APIView):
         )
 
         approved_videos = (
-            Video.objects.filter(is_approved=True)
+            Video.objects.filter(is_approved=True, visibility="public")
             .select_related('category')
             .annotate(
                 num_likes=Count('likes', distinct=True),
@@ -223,7 +223,7 @@ class GuestGetVideo(APIView):
         category_param = request.query_params.get('category', '').strip().lower()
 
         if category_param in ['shortform-videos', 'snips']:
-            snips = Snip.objects.filter(is_approved=True).select_related('author').order_by('-timestamp')
+            snips = Snip.objects.filter(is_approved=True, visibility="public").select_related('author').order_by('-timestamp')
             total = snips.count()
             try:
                 page = max(int(request.query_params.get('page', 1)), 1)
@@ -268,7 +268,7 @@ class GuestGetVideo(APIView):
             }, status=200)
 
         approved_videos = (
-            Video.objects.filter(is_approved=True)
+            Video.objects.filter(is_approved=True, visibility="public")
             .select_related('category')
             .annotate(
                 num_likes=Count('likes', distinct=True),
@@ -364,14 +364,27 @@ class Studio(APIView):
     parser_classes = [MultiPartParser, FormParser, JSONParser]
 
     def patch(self, request):
-        video_id = request.data.get("id")
-        if not video_id:
-            return Response({"detail": "Video ID required"}, status=400)
-
-        video = get_object_or_404(Video, id=video_id, author=request.user)
+        item_id = request.data.get("id")
+        item_type = request.data.get("type", "video")
+        if not item_id:
+            return Response({"detail": "ID required"}, status=400)
 
         title = request.data.get("title")
         description = request.data.get("description")
+        visibility = request.data.get("visibility")
+
+        if item_type == "snip":
+            snip = get_object_or_404(Snip, id=item_id, author=request.user)
+            if title:
+                snip.title = title
+            if description is not None:
+                snip.description = description
+            if visibility in ("public", "unlisted", "private"):
+                snip.visibility = visibility
+            snip.save()
+            return Response(SnipSerializer(snip, context={'request': request}).data, status=200)
+
+        video = get_object_or_404(Video, id=item_id, author=request.user)
         thumbnail_url = request.data.get("thumbnail_url")
         video_url = request.data.get("video_url")
         category = request.data.get("category")
@@ -391,6 +404,8 @@ class Studio(APIView):
                 defaults={"name": category.replace("-", " ").title()},
             )
             video.category = category_obj
+        if visibility in ("public", "unlisted", "private"):
+            video.visibility = visibility
 
         video.save()
         return Response(VideoSerializer(video, context={'request': request}).data, status=200)
@@ -416,8 +431,10 @@ class LoginWatchVideo(APIView):
         if not video_id:
             return Response({"detail": "Video ID not provided"}, status=status.HTTP_400_BAD_REQUEST)
 
-        approved_videos = Video.objects.filter(is_approved=True)
-        video = get_object_or_404(approved_videos.prefetch_related("comments__author"), id=video_id)
+        # Allow public + unlisted for everyone, private only for owner
+        video = get_object_or_404(Video.objects.filter(is_approved=True).prefetch_related("comments__author"), id=video_id)
+        if video.visibility == "private" and video.author != request.user:
+            return Response({"detail": "Video not found"}, status=404)
 
         # Boost category score
         profile, _ = MediaProfile.objects.get_or_create(user=request.user)
@@ -527,8 +544,8 @@ class GuestWatchVideo(APIView):
         if not video_id:
             return Response({"detail": "Video ID not provided"}, status=status.HTTP_400_BAD_REQUEST)
 
-        approved_videos = Video.objects.filter(is_approved=True)
-        video = get_object_or_404(approved_videos, id=video_id)
+        approved_videos = Video.objects.filter(is_approved=True, visibility="public")
+        video = get_object_or_404(Video.objects.filter(is_approved=True), id=video_id)
         video_category = video.category
 
         related_videos = approved_videos.filter(
@@ -860,6 +877,9 @@ class UploadVideo(APIView):
         category = request.data.get('category')
         title = request.data.get("title")
         description = request.data.get("description")
+        visibility = request.data.get("visibility", "public")
+        if visibility not in ("public", "unlisted", "private"):
+            visibility = "public"
 
         if not video_file:
             return Response({"message": "No video provided"}, status=400)
@@ -886,6 +906,7 @@ class UploadVideo(APIView):
                 thumbnail=thumbnail_file or "",
                 video_public_id=video_public_id,
                 thumbnail_public_id=thumbnail_public_id,
+                visibility=visibility,
                 timestamp=timezone.now(),
                 is_approved=False,
             )
@@ -1128,6 +1149,10 @@ class UploadSnip(APIView):
         if not title:
             return Response({"message": "Title is required"}, status=400)
 
+        visibility = request.data.get("visibility", "public")
+        if visibility not in ("public", "unlisted", "private"):
+            visibility = "public"
+
         # Auto-generate thumbnail from Cloudinary video URL if none provided
         if not thumbnail_url and video_url and video_public_id:
             from django.conf import settings
@@ -1144,6 +1169,7 @@ class UploadSnip(APIView):
                 thumbnail=thumbnail_url,
                 video_public_id=video_public_id,
                 thumbnail_public_id=thumbnail_public_id,
+                visibility=visibility,
                 is_approved=False,
             )
         except Exception as e:
@@ -1186,7 +1212,7 @@ class SnipFeed(APIView):
         except (TypeError, ValueError):
             page_size = 12
 
-        approved_snips = Snip.objects.filter(is_approved=True).select_related("author")
+        approved_snips = Snip.objects.filter(is_approved=True, visibility="public").select_related("author")
         total = approved_snips.count()
 
         start = (page - 1) * page_size
@@ -1212,6 +1238,9 @@ class WatchSnip(APIView):
         try:
             snip = Snip.objects.select_related("author").get(id=snip_id)
         except Snip.DoesNotExist:
+            return Response({"detail": "Snip not found"}, status=404)
+
+        if snip.visibility == "private" and snip.author != request.user:
             return Response({"detail": "Snip not found"}, status=404)
 
         Snip.objects.filter(id=snip.id).update(view_count=models.F("view_count") + 1)
