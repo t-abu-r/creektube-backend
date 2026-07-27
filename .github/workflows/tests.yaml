@@ -31,8 +31,8 @@ jobs:
     env:
       VERCEL_ORG_ID: ${{ secrets.VERCEL_ORG_ID }}
       VERCEL_PROJECT_ID: ${{ github.ref_name == 'main' && secrets.VERCEL_PROJECT_ID_PROD || secrets.VERCEL_PROJECT_ID_PREVIEW }}
-      PROD_FLAG: ${{ github.ref_name == 'main' && '--prod' || '' }}
-      ENV_TARGET: ${{ github.ref_name == 'main' && 'production' || 'preview' }}
+      PROD_FLAG: --prod
+      ENV_TARGET: production
     steps:
       - uses: actions/checkout@v4
 
