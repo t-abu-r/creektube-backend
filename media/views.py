@@ -433,6 +433,7 @@ class LoginWatchVideo(APIView):
 
         # Allow public + unlisted for everyone, private only for owner
         video = get_object_or_404(Video.objects.filter(is_approved=True).prefetch_related("comments__author"), id=video_id)
+        approved_videos = Video.objects.filter(is_approved=True, visibility="public")
         if video.visibility == "private" and video.author != request.user:
             return Response({"detail": "Video not found"}, status=404)
 
