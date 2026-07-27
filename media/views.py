@@ -228,6 +228,15 @@ class GuestGetVideo(APIView):
     permission_classes = [AllowAny]
 
     def get(self, request):
+        # Single video by ID (used for SSR/metadata)
+        video_id = request.query_params.get('video_id')
+        if video_id:
+            video = Video.objects.filter(id=video_id, is_approved=True, visibility="public").select_related('author').first()
+            if not video:
+                return Response({"detail": "Video not found"}, status=404)
+            serializer = VideoSerializer(video, many=False, context={'request': request})
+            return Response(serializer.data, status=200)
+
         category_param = request.query_params.get('category', '').strip().lower()
 
         if category_param in ['shortform-videos', 'snips']:
