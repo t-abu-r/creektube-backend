@@ -30,7 +30,7 @@ jobs:
     runs-on: ubuntu-latest
     env:
       VERCEL_ORG_ID: ${{ secrets.VERCEL_ORG_ID }}
-      VERCEL_PROJECT_ID: ${{ github.ref_name == 'main' && secrets.VERCEL_PROJECT_ID_PROD || secrets.VERCEL_PROJECT_ID_PREVIEW }}
+      VERCEL_PROJECT_ID: ${{ github.ref_name == 'main' && secrets.VERCEL_ENV_PRODUCTION || secrets.VERCEL_PROJECT_ID_PREVIEW }}
       # Well since we're different vercel projects for production and preview,
       #  we have set the project id based on the branch. This is a bit of a hack, but it works.
       # So when the deployment happenss, it works on PRODUCTION AND PREVIEW.
