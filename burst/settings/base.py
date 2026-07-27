@@ -89,9 +89,19 @@ AUTH_PASSWORD_VALIDATORS = [
     },
 ]
 
+def _int_env(key, default):
+    val = os.environ.get(key)
+    if val is None:
+        return default
+    try:
+        return int(val)
+    except (ValueError, TypeError):
+        return default
+
+
 SIMPLE_JWT = {
-    "ACCESS_TOKEN_LIFETIME": timedelta(minutes=int(os.environ.get("JWT_ACCESS_TOKEN_LIFETIME_MINUTES", 15))),
-    "REFRESH_TOKEN_LIFETIME": timedelta(days=int(os.environ.get("JWT_REFRESH_TOKEN_LIFETIME_DAYS", 30))),
+    "ACCESS_TOKEN_LIFETIME": timedelta(minutes=_int_env("JWT_ACCESS_TOKEN_LIFETIME_MINUTES", 15)),
+    "REFRESH_TOKEN_LIFETIME": timedelta(days=_int_env("JWT_REFRESH_TOKEN_LIFETIME_DAYS", 30)),
     "ROTATE_REFRESH_TOKENS": True,
     "BLACKLIST_AFTER_ROTATION": True,
 }
@@ -123,12 +133,12 @@ REST_FRAMEWORK = {
 
 # Email settings
 EMAIL_HOST = os.environ.get("EMAIL_HOST", "smtp-relay.brevo.com")
-EMAIL_PORT = int(os.environ.get("EMAIL_PORT", 587))
+EMAIL_PORT = _int_env("EMAIL_PORT", 587)
 EMAIL_USE_TLS = os.environ.get("EMAIL_USE_TLS", "True").lower() == "true"
 EMAIL_HOST_USER = os.environ.get("EMAIL_HOST_USER")
 EMAIL_HOST_PASSWORD = os.environ.get("EMAIL_HOST_PASSWORD")
 DEFAULT_FROM_EMAIL = os.environ.get("DEFAULT_FROM_EMAIL", f"OutReach <outreach@germanypathway.com>" if EMAIL_HOST_USER else None)
-PASSWORD_RESET_TIMEOUT = int(os.environ.get("PASSWORD_RESET_TIMEOUT", 60 * 60 * 24))
+PASSWORD_RESET_TIMEOUT = _int_env("PASSWORD_RESET_TIMEOUT", 60 * 60 * 24)
 
 # Cloudinary settings
 CLOUDINARY_STORAGE = {
@@ -147,8 +157,8 @@ JAZZMIN_SETTINGS = {
 }
 
 # File upload limits
-DATA_UPLOAD_MAX_MEMORY_SIZE = int(os.environ.get("DATA_UPLOAD_MAX_MEMORY_SIZE", 524288000))
-FILE_UPLOAD_MAX_MEMORY_SIZE = int(os.environ.get("FILE_UPLOAD_MAX_MEMORY_SIZE", 524288000))
+DATA_UPLOAD_MAX_MEMORY_SIZE = _int_env("DATA_UPLOAD_MAX_MEMORY_SIZE", 524288000)
+FILE_UPLOAD_MAX_MEMORY_SIZE = _int_env("FILE_UPLOAD_MAX_MEMORY_SIZE", 524288000)
 WHITENOISE_USE_FINDERS = True
 
 # Secrets
