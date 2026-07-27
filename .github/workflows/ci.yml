@@ -23,6 +23,8 @@ jobs:
 
       - name: Run tests
         run: python manage.py test
+        env:
+          DJANGO_SETTINGS_MODULE: burst.settings.dev
 
   # deploy to vercel
   deploy-to-vercel:
