@@ -11,7 +11,7 @@ from .Serializers import *
 from accounts.serializers import ProfileSerializer
 from .models import (Video, Comment, CommentLike, CategoryVideo, MediaProfile, Like,
                      DisPike, Creek, WatchEvent, UploadRateLimit, Notification, Snip, SnipLike)
-from django.db.models import Count, Q
+from django.db.models import Count, Q, Sum, Avg, F
 from . import ranking
 import logging
 
@@ -27,7 +27,6 @@ from datetime import timedelta
 # ---------------------------
 UPLOAD_RATE_LIMIT = 3  # max uploads per hour
 UPLOAD_RATE_WINDOW = timedelta(hours=1)
-VIEW_DEDUP_WINDOW = timedelta(minutes=30)
 VIEW_GAP = timedelta(minutes=2)  # min time between views from same user on same video
 VIEW_MAX_PER_USER = 6  # max views per user per video/snip
 COMMENT_SPAM_LIMIT = 6  # max comments per video
@@ -50,70 +49,42 @@ def record_upload(user):
 
 def record_view(user, video=None, snip=None):
     """
-    Record a view with spam prevention:
-    - Enforce time gap between views from same user on same video/snip
-    - Max 6 views per user per video/snip
-    - Delete excess views beyond 6
-    Returns True if this counts as a new view, False if blocked/duplicate.
+    Create a watch event + update view_count atomically.
+    Anti-spam: 2min gap between views, max 6 per user per item.
+    Returns the created WatchEvent or None if blocked.
     """
     if not user or not user.is_authenticated:
-        return False
+        return None
 
     if video:
-        existing = WatchEvent.objects.filter(user=user, video=video)
+        events = WatchEvent.objects.filter(user=user, video=video)
     elif snip:
-        existing = WatchEvent.objects.filter(user=user, snip=snip)
+        events = WatchEvent.objects.filter(user=user, snip=snip)
     else:
-        return False
+        return None
 
-    # Enforce time gap: must be at least VIEW_GAP since last view
-    last_event = existing.order_by('-timestamp').first()
-    if last_event:
-        time_since_last = timezone.now() - last_event.timestamp
-        if time_since_last < VIEW_GAP:
-            return False
+    now = timezone.now()
 
-    # Enforce max views per user: count existing views
-    view_count = existing.count()
+    # Time gap check
+    last = events.order_by('-timestamp').first()
+    if last and (now - last.timestamp) < VIEW_GAP:
+        return None
 
-    if view_count >= VIEW_MAX_PER_USER:
-        # Delete the oldest view to make room (keep most recent 5, add 1 new)
-        oldest = existing.order_by('timestamp').first()
-        if oldest:
-            oldest.delete()
-        # Update the counter field
-        if video:
-            unique_viewers = WatchEvent.objects.filter(video=video).values('user').distinct().count()
-            Video.objects.filter(pk=video.pk).update(view_count=unique_viewers)
-        elif snip:
-            unique_viewers = WatchEvent.objects.filter(snip=snip).values('user').distinct().count()
-            Snip.objects.filter(pk=snip.pk).update(view_count=unique_viewers)
-        return True
+    # Max views check — delete oldest if exceeded
+    if events.count() >= VIEW_MAX_PER_USER:
+        events.order_by('timestamp').first().delete()
 
-    # New view — increment and update unique viewer count
+    event = WatchEvent.objects.create(user=user, video=video, snip=snip)
+
+    # Recompute unique viewers for the denormalized counter
     if video:
-        unique_viewers = WatchEvent.objects.filter(video=video).values('user').distinct().count()
-        Video.objects.filter(pk=video.pk).update(view_count=unique_viewers + 1)
+        unique = WatchEvent.objects.filter(video=video).values('user').distinct().count()
+        Video.objects.filter(pk=video.pk).update(view_count=unique)
     elif snip:
-        unique_viewers = WatchEvent.objects.filter(snip=snip).values('user').distinct().count()
-        Snip.objects.filter(pk=snip.pk).update(view_count=unique_viewers + 1)
-    return True
+        unique = WatchEvent.objects.filter(snip=snip).values('user').distinct().count()
+        Snip.objects.filter(pk=snip.pk).update(view_count=unique)
 
-
-def get_or_create_session_id(user):
-    """Generate a session ID based on user's recent activity (30min window)."""
-    if not user or not user.is_authenticated:
-        return ""
-    cutoff = timezone.now() - VIEW_DEDUP_WINDOW
-    last_event = (
-        WatchEvent.objects.filter(user=user, timestamp__gte=cutoff)
-        .order_by('-timestamp')
-        .first()
-    )
-    if last_event and last_event.session_id:
-        return last_event.session_id
-    import uuid
-    return uuid.uuid4().hex[:16]
+    return event
 
 
 def check_comment_spam(user, video):
@@ -483,13 +454,7 @@ class LoginWatchVideo(APIView):
             profile.save()
 
         # Record watch event with spam prevention
-        session_id = get_or_create_session_id(request.user)
-        is_new_view = record_view(request.user, video=video)
-        WatchEvent.objects.create(
-            user=request.user,
-            video=video,
-            session_id=session_id,
-        )
+        record_view(request.user, video=video)
 
         # Co-watch powered related videos
         user_recent_ids = ranking.get_user_recent_video_ids(request.user)
@@ -620,32 +585,19 @@ class TrackRetention(APIView):
             return Response({"detail": "Video ID required"}, status=400)
 
         try:
-            duration = int(duration)
+            duration = max(0, min(int(duration), 86400))
         except (TypeError, ValueError):
             duration = 0
 
-        duration = max(0, min(duration, 86400))  # cap at 24 hours
-
         video = get_object_or_404(Video, id=video_id)
-        session_id = get_or_create_session_id(request.user)
-
-        # Update the most recent WatchEvent for this user+video+session
-        recent = (
-            WatchEvent.objects.filter(user=request.user, video=video, session_id=session_id)
+        event = (
+            WatchEvent.objects.filter(user=request.user, video=video)
             .order_by('-timestamp')
             .first()
         )
-        if recent:
-            recent.duration_watched = max(recent.duration_watched, duration)
-            recent.save(update_fields=['duration_watched'])
-        else:
-            # Create a new event if none exists for this session
-            WatchEvent.objects.create(
-                user=request.user,
-                video=video,
-                session_id=session_id,
-                duration_watched=duration,
-            )
+        if event and event.duration_watched < duration:
+            event.duration_watched = duration
+            event.save(update_fields=['duration_watched'])
 
         return Response({"status": "ok"}, status=200)
 
@@ -1291,14 +1243,8 @@ class WatchSnip(APIView):
         # Record view with spam prevention (authenticated users only)
         if request.user.is_authenticated:
             record_view(request.user, snip=snip)
-            WatchEvent.objects.create(
-                user=request.user,
-                snip=snip,
-                session_id=get_or_create_session_id(request.user),
-            )
         else:
-            # Guest views: simple increment with no spam tracking
-            Snip.objects.filter(id=snip.id).update(view_count=models.F("view_count") + 1)
+            Snip.objects.filter(id=snip.id).update(view_count=F("view_count") + 1)
             snip.refresh_from_db(fields=["view_count"])
 
         is_liked = False
@@ -1324,10 +1270,10 @@ class LikeSnip(APIView):
 
         if not created:
             like.delete()
-            Snip.objects.filter(id=snip.id).update(like_count=models.F("like_count") - 1)
+            Snip.objects.filter(id=snip.id).update(like_count=F("like_count") - 1)
             return Response({"is_liked": False, "like_count": max(snip.like_count - 1, 0)}, status=200)
 
-        Snip.objects.filter(id=snip.id).update(like_count=models.F("like_count") + 1)
+        Snip.objects.filter(id=snip.id).update(like_count=F("like_count") + 1)
         snip.refresh_from_db(fields=["like_count"])
         return Response({"is_liked": True, "like_count": snip.like_count}, status=201)
 
@@ -1465,31 +1411,19 @@ class TrackSnipRetention(APIView):
             return Response({"detail": "Snip ID required"}, status=400)
 
         try:
-            duration = int(duration)
+            duration = max(0, min(int(duration), 86400))
         except (TypeError, ValueError):
             duration = 0
 
-        duration = max(0, min(duration, 86400))
-
         snip = get_object_or_404(Snip, id=snip_id)
-        session_id = get_or_create_session_id(request.user)
-
-        # Update the most recent WatchEvent for this user+snip+session
-        recent = (
-            WatchEvent.objects.filter(user=request.user, snip=snip, session_id=session_id)
+        event = (
+            WatchEvent.objects.filter(user=request.user, snip=snip)
             .order_by('-timestamp')
             .first()
         )
-        if recent:
-            recent.duration_watched = max(recent.duration_watched, duration)
-            recent.save(update_fields=['duration_watched'])
-        else:
-            WatchEvent.objects.create(
-                user=request.user,
-                snip=snip,
-                session_id=session_id,
-                duration_watched=duration,
-            )
+        if event and event.duration_watched < duration:
+            event.duration_watched = duration
+            event.save(update_fields=['duration_watched'])
 
         return Response({"status": "ok"}, status=200)
 
@@ -1507,81 +1441,61 @@ class ChannelAnalytics(APIView):
         user = request.user
         period = request.query_params.get("period", "7d")
 
-        if period == "24h":
-            since = timezone.now() - timedelta(hours=24)
-        elif period == "30d":
-            since = timezone.now() - timedelta(days=30)
-        elif period == "90d":
-            since = timezone.now() - timedelta(days=90)
-        else:
-            since = timezone.now() - timedelta(days=7)
+        period_map = {"24h": 1, "7d": 7, "30d": 30, "90d": 90}
+        days = period_map.get(period, 7)
+        since = timezone.now() - timedelta(days=days)
 
-        user_videos = Video.objects.filter(author=user)
-        user_snips = Snip.objects.filter(author=user)
-        all_video_ids = user_videos.values_list('id', flat=True)
-        all_snip_ids = user_snips.values_list('id', flat=True)
+        my_videos = Video.objects.filter(author=user)
+        my_snips = Snip.objects.filter(author=user)
+        v_ids = list(my_videos.values_list('id', flat=True))
+        s_ids = list(my_snips.values_list('id', flat=True))
 
-        total_video_views = user_videos.aggregate(s=Sum('view_count'))['s'] or 0
-        total_snip_views = user_snips.aggregate(s=Sum('view_count'))['s'] or 0
+        video_events = WatchEvent.objects.filter(video_id__in=v_ids, timestamp__gte=since) if v_ids else WatchEvent.objects.none()
+        snip_events = WatchEvent.objects.filter(snip_id__in=s_ids, timestamp__gte=since) if s_ids else WatchEvent.objects.none()
 
-        video_views_in_period = list(
-            WatchEvent.objects.filter(video_id__in=all_video_ids, timestamp__gte=since)
-            .annotate(date=TruncDate('timestamp'))
-            .values('date')
-            .annotate(total_views=Count('id'), unique_viewers=Count('user', distinct=True))
-            .order_by('date')
+        # Daily views
+        video_daily = list(
+            video_events.annotate(day=TruncDate('timestamp'))
+            .values('day').annotate(v=Count('id'), u=Count('user', distinct=True))
+            .order_by('day')
+        )
+        snip_daily = list(
+            snip_events.annotate(day=TruncDate('timestamp'))
+            .values('day').annotate(v=Count('id'), u=Count('user', distinct=True))
+            .order_by('day')
         )
 
-        snip_views_in_period = list(
-            WatchEvent.objects.filter(snip_id__in=all_snip_ids, timestamp__gte=since)
-            .annotate(date=TruncDate('timestamp'))
-            .values('date')
-            .annotate(total_views=Count('id'), unique_viewers=Count('user', distinct=True))
-            .order_by('date')
+        # Per-content retention
+        video_ret = list(
+            video_events.values('video_id', 'video__title')
+            .annotate(avg_dur=Avg('duration_watched'), views=Count('id'), viewers=Count('user', distinct=True))
+            .order_by('-views')[:10]
+        )
+        snip_ret = list(
+            snip_events.values('snip_id', 'snip__title')
+            .annotate(avg_dur=Avg('duration_watched'), views=Count('id'), viewers=Count('user', distinct=True))
+            .order_by('-views')[:10]
         )
 
-        video_retention = list(
-            WatchEvent.objects.filter(video_id__in=all_video_ids, timestamp__gte=since)
-            .values('video__id', 'video__title')
-            .annotate(avg_duration=Avg('duration_watched'), total_views=Count('id'), unique_viewers=Count('user', distinct=True))
-            .order_by('-total_views')[:10]
-        )
-
-        snip_retention = list(
-            WatchEvent.objects.filter(snip_id__in=all_snip_ids, timestamp__gte=since)
-            .values('snip__id', 'snip__title')
-            .annotate(avg_duration=Avg('duration_watched'), total_views=Count('id'), unique_viewers=Count('user', distinct=True))
-            .order_by('-total_views')[:10]
-        )
-
-        top_videos = list(user_videos.order_by('-view_count')[:5].values('id', 'title', 'view_count', 'timestamp'))
-        top_snips = list(user_snips.order_by('-view_count')[:5].values('id', 'title', 'view_count', 'timestamp'))
+        # Top content
+        top_v = list(my_videos.order_by('-view_count')[:5].values('id', 'title', 'view_count', 'timestamp'))
+        top_s = list(my_snips.order_by('-view_count')[:5].values('id', 'title', 'view_count', 'timestamp'))
 
         return Response({
             "totals": {
-                "video_views": total_video_views,
-                "snip_views": total_snip_views,
-                "total_views": total_video_views + total_snip_views,
-                "video_count": user_videos.count(),
-                "snip_count": user_snips.count(),
+                "video_views": my_videos.aggregate(s=Sum('view_count'))['s'] or 0,
+                "snip_views": my_snips.aggregate(s=Sum('view_count'))['s'] or 0,
+                "total_views": (my_videos.aggregate(s=Sum('view_count'))['s'] or 0) + (my_snips.aggregate(s=Sum('view_count'))['s'] or 0),
+                "video_count": my_videos.count(),
+                "snip_count": my_snips.count(),
             },
             "views_over_time": {
-                "videos": video_views_in_period,
-                "snips": snip_views_in_period,
+                "videos": [{"date": str(d['day']), "total_views": d['v'], "unique_viewers": d['u']} for d in video_daily],
+                "snips": [{"date": str(d['day']), "total_views": d['v'], "unique_viewers": d['u']} for d in snip_daily],
             },
             "retention": {
-                "videos": [
-                    {"id": r['video__id'], "title": r['video__title'],
-                     "avg_duration": round(r['avg_duration'] or 0, 1),
-                     "total_views": r['total_views'], "unique_viewers": r['unique_viewers']}
-                    for r in video_retention
-                ],
-                "snips": [
-                    {"id": r['snip__id'], "title": r['snip__title'],
-                     "avg_duration": round(r['avg_duration'] or 0, 1),
-                     "total_views": r['total_views'], "unique_viewers": r['unique_viewers']}
-                    for r in snip_retention
-                ],
+                "videos": [{"id": r['video_id'], "title": r['video__title'], "avg_duration": round(r['avg_dur'] or 0, 1), "total_views": r['views'], "unique_viewers": r['viewers']} for r in video_ret],
+                "snips": [{"id": r['snip_id'], "title": r['snip__title'], "avg_duration": round(r['avg_dur'] or 0, 1), "total_views": r['views'], "unique_viewers": r['viewers']} for r in snip_ret],
             },
-            "top_content": {"videos": top_videos, "snips": top_snips},
+            "top_content": {"videos": top_v, "snips": top_s},
         }, status=200)
