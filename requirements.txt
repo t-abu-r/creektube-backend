@@ -1,4 +1,4 @@
-asgiref==3.11.1
+asgiref
 certifi==2026.2.25
 charset-normalizer==3.4.4
 django-cloudinary-storage
