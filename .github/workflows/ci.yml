@@ -52,7 +52,7 @@ jobs:
 
       - name: Run Django Migrations
       # dotenv n django
-        run: pip install python-dotenv
+        # run: pip install python-dotenv
         run: source venv/Scripts/activate
       - name: Load Environment Variables from .env File
         env:
