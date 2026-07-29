@@ -26,12 +26,6 @@ INSTALLED_APPS = [
     "rest_framework_simplejwt.token_blacklist",
 ]
 
-try:
-    import daphne  # noqa: F401
-    INSTALLED_APPS.insert(0, 'daphne')
-except ImportError:
-    pass
-
 MIDDLEWARE = [
     'django.middleware.security.SecurityMiddleware',
     'whitenoise.middleware.WhiteNoiseMiddleware',

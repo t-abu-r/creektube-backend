@@ -27,7 +27,8 @@ MEDIA_ROOT = os.path.join(BASE_DIR, 'media')
 # }
 
 # Cloudinary apps already removed in base.py, no need to filter here
-INSTALLED_APPS = INSTALLED_APPS
+# daphne required for Channels runserver in dev
+INSTALLED_APPS = ['daphne', *INSTALLED_APPS]
 
 # Database - use SQLite from base settings
 # DATABASES already set in base.py
