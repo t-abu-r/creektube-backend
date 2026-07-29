@@ -50,6 +50,15 @@ jobs:
       - name: Pull Vercel Environment Information
         run: vercel pull --yes --environment=${{ env.ENV_TARGET }} --token=${{ secrets.VERCEL_TOKEN }}
 
+      - name: Run Django Migrations
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+          SECRET_KEY: ${{ secrets.SECRET_KEY }}
+          DEBUG: "False"
+          DJANGO_SETTINGS_MODULE: burst.settings.prod
+        run: |
+          python manage.py migrate --noinput
+
       - name: Build Project Artifacts
         run: vercel build ${{ env.PROD_FLAG }} --token=${{ secrets.VERCEL_TOKEN }}
 
