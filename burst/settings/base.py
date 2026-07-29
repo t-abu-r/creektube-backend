@@ -12,7 +12,6 @@ BASE_DIR = Path(__file__).resolve().parent.parent.parent
 
 # Application definition
 INSTALLED_APPS = [
-    'daphne',
     'django.contrib.admin',
     'django.contrib.auth',
     'django.contrib.contenttypes',
@@ -26,6 +25,12 @@ INSTALLED_APPS = [
     "media",
     "rest_framework_simplejwt.token_blacklist",
 ]
+
+try:
+    import daphne  # noqa: F401
+    INSTALLED_APPS.insert(0, 'daphne')
+except ImportError:
+    pass
 
 MIDDLEWARE = [
     'django.middleware.security.SecurityMiddleware',
