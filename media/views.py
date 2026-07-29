@@ -14,7 +14,7 @@ from .models import (Video, Comment, CommentLike, CategoryVideo, MediaProfile, L
 from django.db.models import Count, Q, Sum, Avg, F
 from . import ranking
 import logging
-
+from django.db.models.functions import TruncDate
 logger = logging.getLogger(__name__)
 from django.views.decorators.csrf import csrf_exempt
 from django.utils.decorators import method_decorator
@@ -1440,13 +1440,13 @@ class TrackSnipRetention(APIView):
 # ---------------------------
 # Analytics API
 # ---------------------------
-from django.db.models.functions import TruncDate
 
 
 class ChannelAnalytics(APIView):
     permission_classes = [IsAuthenticated]
 
     def get(self, request):
+        
         user = request.user
         period = request.query_params.get("period", "7d")
 
