@@ -51,6 +51,9 @@ jobs:
         run: vercel pull --yes --environment=${{ env.ENV_TARGET }} --token=${{ secrets.VERCEL_TOKEN }}
 
       - name: Run Django Migrations
+      # dotenv
+        run: pip install python-dotenv
+      - name: Load Environment Variables from .env File
         env:
           DATABASE_URL: ${{ secrets.DATABASE_URL }}
           SECRET_KEY: ${{ secrets.SECRET_KEY }}
