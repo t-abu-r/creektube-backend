@@ -7,10 +7,23 @@ from .models import *
 class MediaProfileSerializer(serializers.ModelSerializer):
     username = serializers.CharField(source='user.username', read_only=True)
     avatar = serializers.SerializerMethodField()
+    banner = serializers.SerializerMethodField()
 
     class Meta:
         model = MediaProfile
-        fields = ["id", "username", "categories", "moderator", "official", "avatar"]
+        fields = ["id", "username", "categories", "moderator", "official", "avatar", "banner"]
+
+    def get_thumbnail(self, obj):
+        request = self.context.get("request")
+        try:
+            profile = Profile.objects.get(user=obj.user)
+            if profile.avatar:
+                if request:
+                    return request.build_absolute_uri(profile.avatar.url)
+                return profile.avatar.url
+            return None
+        except Profile.DoesNotExist:
+            return None
 
     def get_avatar(self, obj):
         request = self.context.get("request")
@@ -25,12 +38,14 @@ class MediaProfileSerializer(serializers.ModelSerializer):
             return None
 
 
+    def get_banner(self, obj):
+        if obj.banner:
+            return obj.banner
+        return None
+
+
 class CategoryVideoSerializer(serializers.ModelSerializer):
     video_count = serializers.IntegerField(read_only=True)
-
-    class Meta:
-        model = CategoryVideo
-        fields = ["id", "name", "slug", "video_count"]
 
 
 class LikeSerializer(serializers.ModelSerializer):

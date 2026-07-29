@@ -964,8 +964,8 @@ class StudioComments(APIView):
 class Account(APIView):
     permission_classes = [AllowAny]
 
-    def post(self, request):
-        id = request.data.get("id")
+    def get(self, request):
+        id = request.query_params.get("id")
         if not id:
             return Response({"error": "ID is required"}, status=400)
 
@@ -974,7 +974,10 @@ class Account(APIView):
         except MediaProfile.DoesNotExist:
             return Response({"error": "Profile not found"}, status=404)
 
-        videos = Video.objects.filter(author=profile_media.user, is_approved=True)
+        user = profile_media.user
+        videos = Video.objects.filter(author=user, is_approved=True)
+        snips = Snip.objects.filter(author=user, is_approved=True)
+        banner = profile_media.banner if profile_media.banner else None
         creek_count = Creek.objects.filter(account=profile_media).count()
 
         is_creeked = False
@@ -982,15 +985,36 @@ class Account(APIView):
             is_creeked = Creek.objects.filter(author=request.user, account=profile_media).exists()
 
         try:
-            user_profile = Profile.objects.get(user=profile_media.user)
+            user_profile = Profile.objects.get(user=user)
             profile_data = ProfileSerializer(user_profile, context={"request": request}).data
         except Profile.DoesNotExist:
             profile_data = {"avatar_url": None, "bio": None}
 
+        total_views = 0
+        for video in videos:
+            total_views += video.view_count
+        for snip in snips:
+            total_views += snip.view_count
+
+        # Featured video (most viewed public video)
+        featured = videos.filter(visibility="public").order_by('-view_count').first()
+
         return Response({
             "profile": profile_data,
-            "account": MediaProfileSerializer(profile_media).data,
+            "account": {
+                **MediaProfileSerializer(profile_media, context={"request": request}).data,
+                "banner": banner,
+            },
+            "stats": {
+                "videos": videos.count(),
+                "snips": snips.count(),
+                "total_views": total_views,
+                "creeks": creek_count,
+                "joined": user.date_joined.strftime("%b %Y") if user.date_joined else None,
+            },
+            "featured": VideoSerializer(featured, context={'request': request}).data if featured else None,
             "videos": VideoSerializer(videos, many=True, context={'request': request}).data,
+            "snips": SnipSerializer(snips, many=True, context={'request': request}).data,
             "creek_count": creek_count,
             "creek": is_creeked,
         }, status=200)
