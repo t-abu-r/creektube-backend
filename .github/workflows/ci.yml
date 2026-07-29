@@ -52,8 +52,8 @@ jobs:
 
       - name: Run Django Migrations
       # dotenv n django
-        # run: pip install python-dotenv
-        run: source venv/Scripts/activate
+        # Requirements.txt
+        run: python requirements.txt -r
       - name: Load Environment Variables from .env File
         env:
           DATABASE_URL: ${{ secrets.DATABASE_URL }}
