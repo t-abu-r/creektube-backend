@@ -964,8 +964,8 @@ class StudioComments(APIView):
 class Account(APIView):
     permission_classes = [AllowAny]
 
-    def get(self, request):
-        id = request.query_params.get("id")
+    def _handle(self, request):
+        id = request.query_params.get("id") or request.data.get("id")
         if not id:
             return Response({"error": "ID is required"}, status=400)
 
@@ -1018,6 +1018,12 @@ class Account(APIView):
             "creek_count": creek_count,
             "creek": is_creeked,
         }, status=200)
+
+    def get(self, request):
+        return self._handle(request)
+
+    def post(self, request):
+        return self._handle(request)
 
 
 class NotificationList(APIView):
