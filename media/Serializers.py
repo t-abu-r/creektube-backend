@@ -39,9 +39,12 @@ class MediaProfileSerializer(serializers.ModelSerializer):
 
 
     def get_banner(self, obj):
-        if obj.banner:
-            return obj.banner
-        return None
+        if not obj.banner:
+            return None
+        request = self.context.get("request")
+        if request:
+            return request.build_absolute_uri(obj.banner.url)
+        return obj.banner.url
 
 
 class CategoryVideoSerializer(serializers.ModelSerializer):

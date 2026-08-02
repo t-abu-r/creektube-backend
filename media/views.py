@@ -977,7 +977,6 @@ class Account(APIView):
         user = profile_media.user
         videos = Video.objects.filter(author=user, is_approved=True)
         snips = Snip.objects.filter(author=user, is_approved=True)
-        banner = profile_media.banner if profile_media.banner else None
         creek_count = Creek.objects.filter(account=profile_media).count()
 
         is_creeked = False
@@ -1001,10 +1000,7 @@ class Account(APIView):
 
         return Response({
             "profile": profile_data,
-            "account": {
-                **MediaProfileSerializer(profile_media, context={"request": request}).data,
-                "banner": banner,
-            },
+            "account": MediaProfileSerializer(profile_media, context={"request": request}).data,
             "stats": {
                 "videos": videos.count(),
                 "snips": snips.count(),
@@ -1024,6 +1020,31 @@ class Account(APIView):
 
     def post(self, request):
         return self._handle(request)
+
+
+class SetBanner(APIView):
+    permission_classes = [IsAuthenticated]
+    parser_classes = [MultiPartParser, FormParser]
+
+    def put(self, request):
+        banner_file = request.FILES.get("banner")
+        if not banner_file:
+            return Response({"error": "No banner uploaded"}, status=400)
+
+        profile, _ = MediaProfile.objects.get_or_create(user=request.user)
+        profile.banner = banner_file
+        profile.save()
+
+        return Response({
+            "banner": MediaProfileSerializer(profile, context={"request": request}).data["banner"]
+        }, status=200)
+
+    def delete(self, request):
+        profile, _ = MediaProfile.objects.get_or_create(user=request.user)
+        profile.banner.delete(save=False)
+        profile.banner = None
+        profile.save()
+        return Response({"banner": None}, status=200)
 
 
 class NotificationList(APIView):

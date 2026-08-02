@@ -26,6 +26,7 @@ urlpatterns = [
     path("searchusers/", SearchUsers.as_view(), name="SearchUsers"),
     path("studio/comments/", StudioComments.as_view(), name="StudioComments"),
     path("account/", Account.as_view(), name="GetAccount"),
+    path("account/banner/", SetBanner.as_view(), name="SetBanner"),
     path("trackretention/", TrackRetention.as_view(), name="TrackRetention"),
     path("notifications/unread-count/", NotificationUnreadCount.as_view(), name="NotificationUnreadCount"),
     path("notifications/mark-read/", NotificationMarkRead.as_view(), name="NotificationMarkRead"),

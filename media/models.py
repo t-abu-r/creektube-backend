@@ -16,7 +16,7 @@ class MediaProfile(models.Model):
     categories = models.JSONField(default=dict)
     moderator = models.BooleanField(default=False)
     official = models.BooleanField(default=False)
-    banner = models.TextField(blank=True, default="")
+    banner = models.ImageField(upload_to='banners/', blank=True, null=True)
 
     def __str__(self):
         return self.user.username
