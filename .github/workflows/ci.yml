@@ -2,7 +2,7 @@ name: Django CI
 
 on:
   push:
-    branches: [ test, main ]
+    branches: [ main, test ]
 
 permissions:
   contents: write
@@ -24,8 +24,8 @@ jobs:
       - name: Run tests
         run: python manage.py test
         env:
-          DJANGO_SETTINGS_MODULE: burst.settings.dev
-
+          DJANGO_SETTINGS_MODULE: burst.settings.prod
+          
   # deploy to vercel
   deploy-to-vercel:
     needs: build
