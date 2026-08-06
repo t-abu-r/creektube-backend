@@ -8,10 +8,11 @@ class MediaProfileSerializer(serializers.ModelSerializer):
     username = serializers.CharField(source='user.username', read_only=True)
     avatar = serializers.SerializerMethodField()
     banner = serializers.SerializerMethodField()
+    active = serializers.BooleanField(source='user.is_active', read_only=True)
 
     class Meta:
         model = MediaProfile
-        fields = ["id", "username", "categories", "moderator", "official", "avatar", "banner"]
+        fields = ["id", "username", "categories", "moderator", "official", "active", "avatar", "banner"]
 
     def get_thumbnail(self, obj):
         request = self.context.get("request")
@@ -129,6 +130,7 @@ class SnipSerializer(serializers.ModelSerializer):
     author = serializers.CharField(source="author.username", read_only=True)
     author_id = serializers.SerializerMethodField()
     author_avatar = serializers.SerializerMethodField()
+    author_active = serializers.SerializerMethodField()
     video = serializers.SerializerMethodField()
     thumbnail = serializers.SerializerMethodField()
     is_liked = serializers.SerializerMethodField()
@@ -137,9 +139,12 @@ class SnipSerializer(serializers.ModelSerializer):
         model = Snip
         fields = [
             "id", "title", "description", "video", "thumbnail", "visibility", "timestamp",
-            "is_approved", "author", "author_id", "author_avatar",
+            "is_approved", "author", "author_id", "author_avatar", "author_active",
             "view_count", "like_count", "is_liked",
         ]
+
+    def get_author_active(self, obj):
+        return obj.author.is_active
 
     def get_author_id(self, obj):
         try:
@@ -179,6 +184,7 @@ class SnipSerializer(serializers.ModelSerializer):
 class VideoSerializer(serializers.ModelSerializer):
     author = serializers.CharField(source="author.username", read_only=True)
     author_avatar = serializers.SerializerMethodField()
+    author_active = serializers.SerializerMethodField()
     thumbnail = serializers.SerializerMethodField()
     video = serializers.SerializerMethodField()
     comments = serializers.SerializerMethodField()
@@ -191,9 +197,12 @@ class VideoSerializer(serializers.ModelSerializer):
         model = Video
         fields = [
             "id", "category", "category_name", "title", "description", "thumbnail", "video", "visibility",
-            "timestamp", "is_approved", "author", "author_id", "author_avatar",
+            "timestamp", "is_approved", "author", "author_id", "author_avatar", "author_active",
             "comments", "view_count",
         ]
+
+    def get_author_active(self, obj):
+        return obj.author.is_active
 
     def get_category_name(self, obj):
         if obj.category:
