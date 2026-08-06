@@ -208,9 +208,6 @@ class JWTLoginView(APIView):
         user = authenticate(username=username, password=password)
         if user is None:
             return Response({"error": "Invalid credentials"}, status=400)
-        if not user.is_active:
-            user.is_active = True
-            user.save()
         MediaProfile.objects.get_or_create(user=user)
         if user is not None:
             refresh = RefreshToken.for_user(user)
@@ -341,9 +338,6 @@ class CookieTokenLoginView(APIView):
         user = authenticate(username=username, password=password)
         if user is None:
             return Response({"error": "Invalid credentials"}, status=400)
-        if not user.is_active:
-            user.is_active = True
-            user.save()
         MediaProfile.objects.get_or_create(user=user)
         refresh = RefreshToken.for_user(user)
         access_token = str(refresh.access_token)
@@ -361,6 +355,9 @@ class CookieTokenRefreshView(APIView):
             return Response({"error": "Refresh token not found"}, status=401)
         try:
             refresh = RefreshToken(refresh_token)
+            user = User.objects.filter(pk=refresh.payload.get("user_id"), is_active=True).first()
+            if user is None:
+                return Response({"error": "Account is deactivated"}, status=401)
             new_access = str(refresh.access_token)
             new_refresh = str(refresh)
             refresh.blacklist()

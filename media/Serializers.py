@@ -112,7 +112,7 @@ class CommentSerializer(serializers.ModelSerializer):
     def get_replies(self, obj):
         if obj.parent is not None:
             return []
-        replies = obj.replies.all().order_by('timestamp')
+        replies = obj.replies.filter(author__is_active=True).order_by('timestamp')
         return CommentSerializer(replies, many=True, context=self.context).data
 
     def get_likes_count(self, obj):
@@ -181,7 +181,7 @@ class VideoSerializer(serializers.ModelSerializer):
     author_avatar = serializers.SerializerMethodField()
     thumbnail = serializers.SerializerMethodField()
     video = serializers.SerializerMethodField()
-    comments = CommentSerializer(many=True, read_only=True)
+    comments = serializers.SerializerMethodField()
     category = serializers.SlugRelatedField(slug_field="slug", read_only=True)
     category_name = serializers.SerializerMethodField()
     author_id = serializers.SerializerMethodField()
@@ -199,6 +199,10 @@ class VideoSerializer(serializers.ModelSerializer):
         if obj.category:
             return obj.category.name
         return None
+
+    def get_comments(self, obj):
+        comments = obj.comments.filter(author__is_active=True).order_by('-is_pinned', '-timestamp')
+        return CommentSerializer(comments, many=True, context=self.context).data
 
     def get_author_id(self, obj):
         try:

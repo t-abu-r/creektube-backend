@@ -121,7 +121,7 @@ class SnipFeedConsumer(AsyncWebsocketConsumer):
             return None
 
         try:
-            snip = Snip.objects.get(id=snip_id)
+            snip = Snip.objects.filter(author__is_active=True).get(id=snip_id)
         except Snip.DoesNotExist:
             return None
 

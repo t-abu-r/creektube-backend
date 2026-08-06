@@ -133,7 +133,7 @@ class LoginGetVideo(APIView):
         category_param = request.query_params.get('category', '').strip().lower()
 
         if category_param in ['shortform-videos', 'snips']:
-            snips = Snip.objects.filter(is_approved=True, visibility="public").select_related('author').order_by('-timestamp')
+            snips = Snip.objects.filter(is_approved=True, visibility="public", author__is_active=True).select_related('author').order_by('-timestamp')
             total = snips.count()
             try:
                 page = max(int(request.query_params.get('page', 1)), 1)
@@ -175,11 +175,12 @@ class LoginGetVideo(APIView):
         user_interest = profile.categories
         creeked_author_ids = set(
             Creek.objects.filter(author=request.user)
+            .exclude(account__user__is_active=False)
             .values_list('account__user_id', flat=True)
         )
 
         approved_videos = (
-            Video.objects.filter(is_approved=True, visibility="public")
+            Video.objects.filter(is_approved=True, visibility="public", author__is_active=True)
             .select_related('category')
             .annotate(
                 num_likes=Count('likes', distinct=True),
@@ -231,7 +232,7 @@ class GuestGetVideo(APIView):
         # Single video by ID (used for SSR/metadata)
         video_id = request.query_params.get('video_id')
         if video_id:
-            video = Video.objects.filter(id=video_id, is_approved=True, visibility="public").select_related('author').first()
+            video = Video.objects.filter(id=video_id, is_approved=True, visibility="public", author__is_active=True).select_related('author').first()
             if not video:
                 return Response({"detail": "Video not found"}, status=404)
             serializer = VideoSerializer(video, many=False, context={'request': request})
@@ -240,7 +241,7 @@ class GuestGetVideo(APIView):
         category_param = request.query_params.get('category', '').strip().lower()
 
         if category_param in ['shortform-videos', 'snips']:
-            snips = Snip.objects.filter(is_approved=True, visibility="public").select_related('author').order_by('-timestamp')
+            snips = Snip.objects.filter(is_approved=True, visibility="public", author__is_active=True).select_related('author').order_by('-timestamp')
             total = snips.count()
             try:
                 page = max(int(request.query_params.get('page', 1)), 1)
@@ -285,7 +286,7 @@ class GuestGetVideo(APIView):
             }, status=200)
 
         approved_videos = (
-            Video.objects.filter(is_approved=True, visibility="public")
+            Video.objects.filter(is_approved=True, visibility="public", author__is_active=True)
             .select_related('category')
             .annotate(
                 num_likes=Count('likes', distinct=True),
@@ -345,7 +346,9 @@ class Categories(APIView):
             slug="shortform-videos",
             defaults={"name": "Shortform Videos"}
         )
-        categories = CategoryVideo.objects.annotate(video_count=Count('videos'))
+        categories = CategoryVideo.objects.annotate(
+            video_count=Count('videos', filter=Q(videos__author__is_active=True))
+        )
         serializer = CategoryVideoSerializer(categories, many=True)
         return Response(serializer.data, status=status.HTTP_200_OK)
 
@@ -449,8 +452,8 @@ class LoginWatchVideo(APIView):
             return Response({"detail": "Video ID not provided"}, status=status.HTTP_400_BAD_REQUEST)
 
         # Allow public + unlisted for everyone, private only for owner
-        video = get_object_or_404(Video.objects.filter(is_approved=True).prefetch_related("comments__author"), id=video_id)
-        approved_videos = Video.objects.filter(is_approved=True, visibility="public")
+        video = get_object_or_404(Video.objects.filter(is_approved=True, author__is_active=True).prefetch_related("comments__author"), id=video_id)
+        approved_videos = Video.objects.filter(is_approved=True, visibility="public", author__is_active=True)
         if video.visibility == "private" and video.author != request.user:
             return Response({"detail": "Video not found"}, status=404)
 
@@ -555,8 +558,8 @@ class GuestWatchVideo(APIView):
         if not video_id:
             return Response({"detail": "Video ID not provided"}, status=status.HTTP_400_BAD_REQUEST)
 
-        approved_videos = Video.objects.filter(is_approved=True, visibility="public")
-        video = get_object_or_404(Video.objects.filter(is_approved=True), id=video_id)
+        approved_videos = Video.objects.filter(is_approved=True, visibility="public", author__is_active=True)
+        video = get_object_or_404(Video.objects.filter(is_approved=True, author__is_active=True), id=video_id)
         video_category = video.category
 
         related_videos = approved_videos.filter(
@@ -598,7 +601,7 @@ class TrackRetention(APIView):
         except (TypeError, ValueError):
             duration = 0
 
-        video = get_object_or_404(Video, id=video_id)
+        video = get_object_or_404(Video.objects.filter(author__is_active=True), id=video_id)
         event = (
             WatchEvent.objects.filter(user=request.user, video=video)
             .order_by('-timestamp')
@@ -624,11 +627,13 @@ class SearchVideo(APIView):
 
         videos = Video.objects.filter(
             Q(title__icontains=title) |
-            Q(description__icontains=title)
+            Q(description__icontains=title),
+            author__is_active=True
         ).order_by("-id")[:20]
 
         users = MediaProfile.objects.filter(
-            Q(user__username__icontains=title)
+            Q(user__username__icontains=title),
+            user__is_active=True
         ).select_related('user')[:10]
 
         video_serializer = VideoSerializer(videos, many=True, context={'request': request})
@@ -649,7 +654,8 @@ class SearchUsers(APIView):
             return Response([], status=status.HTTP_200_OK)
 
         users = MediaProfile.objects.filter(
-            Q(user__username__icontains=q)
+            Q(user__username__icontains=q),
+            user__is_active=True
         ).select_related('user')[:8]
 
         serializer = MediaProfileSerializer(users, many=True, context={'request': request})
@@ -717,6 +723,48 @@ class ModPanel(APIView):
         return Response({"detail": "Video deleted"}, status=status.HTTP_204_NO_CONTENT)
 
 
+class SetAccountActive(APIView):
+    """
+    Moderator tool: deactivate or reactivate an account.
+    Deactivated accounts still exist but their content is hidden
+    everywhere and they can no longer authenticate.
+    """
+    permission_classes = [IsModerator]
+
+    def post(self, request):
+        account_id = request.data.get("id")
+        active = request.data.get("active")
+        if not account_id:
+            return Response({"error": "Account ID required"}, status=400)
+        if active is None:
+            return Response({"error": "active boolean required"}, status=400)
+
+        try:
+            profile_media = MediaProfile.objects.get(id=account_id)
+        except MediaProfile.DoesNotExist:
+            return Response({"error": "Account not found"}, status=404)
+
+        user = profile_media.user
+        if user.is_superuser:
+            return Response({"error": "You cannot modify an admin account"}, status=400)
+
+        if user == request.user:
+            return Response({"error": "You cannot modify your own account"}, status=400)
+
+        user.is_active = bool(active)
+        user.save(update_fields=["is_active"])
+
+        if not user.is_active:
+            # Immediately invalidate all outstanding refresh tokens
+            from rest_framework_simplejwt.token_blacklist.models import OutstandingToken
+            OutstandingToken.objects.filter(user=user).delete()
+
+        return Response({
+            "detail": "Account deactivated" if not user.is_active else "Account reactivated",
+            "active": user.is_active,
+        }, status=200)
+
+
 # ---------------------------
 # Interactable Video Features
 # ---------------------------
@@ -727,8 +775,8 @@ class CommentVideo(APIView):
         if not video_id:
             return Response({'message': 'No video ID provided'}, status=status.HTTP_400_BAD_REQUEST)
 
-        video = get_object_or_404(Video, id=video_id)
-        top_level = Comment.objects.filter(video=video, parent=None).select_related('author').order_by('-is_pinned', '-timestamp')
+        video = get_object_or_404(Video.objects.filter(author__is_active=True), id=video_id)
+        top_level = Comment.objects.filter(video=video, parent=None, author__is_active=True).select_related('author').order_by('-is_pinned', '-timestamp')
 
         serializer = CommentSerializer(top_level, many=True, context={'request': request})
         return Response(serializer.data, status=status.HTTP_200_OK)
@@ -747,7 +795,7 @@ class UploadCommentVideo(APIView):
         if not comment_text:
             return Response({'message': 'No comment provided'}, status=status.HTTP_400_BAD_REQUEST)
 
-        video = get_object_or_404(Video, id=video_id)
+        video = get_object_or_404(Video.objects.filter(author__is_active=True), id=video_id)
 
         # Spam check
         if not check_comment_spam(author, video):
@@ -776,7 +824,7 @@ class PikeVideo(APIView):
         if not video_id:
             return Response({"detail": "Video ID required"}, status=status.HTTP_400_BAD_REQUEST)
 
-        video = get_object_or_404(Video, id=video_id)
+        video = get_object_or_404(Video.objects.filter(author__is_active=True), id=video_id)
         like, created = Like.objects.get_or_create(author=request.user, video=video)
 
         if not created:
@@ -814,7 +862,7 @@ class DisPikeVideo(APIView):
         if not video_id:
             return Response({"detail": "Video ID required"}, status=status.HTTP_400_BAD_REQUEST)
 
-        video = get_object_or_404(Video, id=video_id)
+        video = get_object_or_404(Video.objects.filter(author__is_active=True), id=video_id)
         dispike, created = DisPike.objects.get_or_create(author=request.user, video=video)
 
         profile, _ = MediaProfile.objects.get_or_create(user=request.user)
@@ -838,7 +886,7 @@ class CreekAccount(APIView):
         if not account_id:
             return Response({"detail": "Account ID required"}, status=status.HTTP_400_BAD_REQUEST)
 
-        account = get_object_or_404(MediaProfile, id=account_id)
+        account = get_object_or_404(MediaProfile.objects.filter(user__is_active=True), id=account_id)
 
         if account.user == request.user:
             return Response({"detail": "You cannot creek your own channel"}, status=status.HTTP_400_BAD_REQUEST)
@@ -975,8 +1023,11 @@ class Account(APIView):
             return Response({"error": "Profile not found"}, status=404)
 
         user = profile_media.user
-        videos = Video.objects.filter(author=user, is_approved=True)
-        snips = Snip.objects.filter(author=user, is_approved=True)
+        if not user.is_active:
+            return Response({"error": "Profile not found"}, status=404)
+
+        videos = Video.objects.filter(author=user, is_approved=True, author__is_active=True)
+        snips = Snip.objects.filter(author=user, is_approved=True, author__is_active=True)
         creek_count = Creek.objects.filter(account=profile_media).count()
 
         is_creeked = False
@@ -1269,7 +1320,7 @@ class SnipFeed(APIView):
         except (TypeError, ValueError):
             page_size = 12
 
-        approved_snips = Snip.objects.filter(is_approved=True, visibility="public").select_related("author")
+        approved_snips = Snip.objects.filter(is_approved=True, visibility="public", author__is_active=True).select_related("author")
         total = approved_snips.count()
 
         start = (page - 1) * page_size
@@ -1293,7 +1344,7 @@ class WatchSnip(APIView):
             return Response({"detail": "Snip ID required"}, status=400)
 
         try:
-            snip = Snip.objects.select_related("author").get(id=snip_id)
+            snip = Snip.objects.filter(author__is_active=True).select_related("author").get(id=snip_id)
         except Snip.DoesNotExist:
             return Response({"detail": "Snip not found"}, status=404)
 
@@ -1325,7 +1376,7 @@ class LikeSnip(APIView):
         if not snip_id:
             return Response({"detail": "Snip ID required"}, status=400)
 
-        snip = get_object_or_404(Snip, id=snip_id)
+        snip = get_object_or_404(Snip.objects.filter(author__is_active=True), id=snip_id)
         like, created = SnipLike.objects.get_or_create(author=request.user, snip=snip)
 
         if not created:
@@ -1366,8 +1417,8 @@ class SnipCommentList(APIView):
         if not snip_id:
             return Response({'detail': 'snip_id required'}, status=status.HTTP_400_BAD_REQUEST)
 
-        snip = get_object_or_404(Snip, id=snip_id)
-        top_level = Comment.objects.filter(snip=snip, parent=None).select_related('author').order_by('-is_pinned', '-timestamp')
+        snip = get_object_or_404(Snip.objects.filter(author__is_active=True), id=snip_id)
+        top_level = Comment.objects.filter(snip=snip, parent=None, author__is_active=True).select_related('author').order_by('-is_pinned', '-timestamp')
         serializer = CommentSerializer(top_level, many=True, context={'request': request})
         return Response(serializer.data, status=status.HTTP_200_OK)
 
@@ -1385,7 +1436,7 @@ class UploadSnipComment(APIView):
         if not comment_text:
             return Response({'detail': 'No comment provided'}, status=status.HTTP_400_BAD_REQUEST)
 
-        snip = get_object_or_404(Snip, id=snip_id)
+        snip = get_object_or_404(Snip.objects.filter(author__is_active=True), id=snip_id)
 
         cutoff = timezone.now() - COMMENT_SPAM_WINDOW
         recent = Comment.objects.filter(
@@ -1475,7 +1526,7 @@ class TrackSnipRetention(APIView):
         except (TypeError, ValueError):
             duration = 0
 
-        snip = get_object_or_404(Snip, id=snip_id)
+        snip = get_object_or_404(Snip.objects.filter(author__is_active=True), id=snip_id)
         event = (
             WatchEvent.objects.filter(user=request.user, snip=snip)
             .order_by('-timestamp')

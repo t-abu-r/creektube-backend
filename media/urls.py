@@ -21,6 +21,7 @@ urlpatterns = [
     path("pincomment/", PinComment.as_view(), name="PinComment"),
     # MOD PANEL
     path("mod-panel/", ModPanel.as_view()),
+    path("set-account-active/", SetAccountActive.as_view(), name="SetAccountActive"),
     path("getmod/", IfModerator.as_view(), name="GetMod"),
     path("searchvideo/", SearchVideo.as_view(), name="SearchVideo"),
     path("searchusers/", SearchUsers.as_view(), name="SearchUsers"),
