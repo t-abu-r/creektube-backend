@@ -289,9 +289,8 @@ class JWTResetPasswordView(APIView):
         email = request.data.get("email")
         if not email:
             return Response({"error": "Email is required"}, status=HTTP_400_BAD_REQUEST)
-        try:
-            user = User.objects.get(email=email)
-        except User.DoesNotExist:
+        user = User.objects.filter(email=email).first()
+        if user is None:
             return Response({"detail": "Email Sent!"}, status=status.HTTP_200_OK)
         token = default_token_generator.make_token(user)
         uid = urlsafe_base64_encode(force_bytes(user.pk))
@@ -409,9 +408,8 @@ class ResetPasswordView(APIView):
         email = request.data.get("email")
         if not email:
             return Response({"error": "Email is required"}, status=400)
-        try:
-            user = User.objects.get(email=email)
-        except User.DoesNotExist:
+        user = User.objects.filter(email=email).first()
+        if user is None:
             return Response({"detail": "Password reset email has been sent."}, status=200)
 
         profile, _ = Profile.objects.get_or_create(user=user)
@@ -617,9 +615,8 @@ class ForgotPasswordRequest(APIView):
         if not email:
             return Response({"error": "Email is required"}, status=400)
 
-        try:
-            user = User.objects.get(email=email)
-        except User.DoesNotExist:
+        user = User.objects.filter(email=email).first()
+        if user is None:
             return Response({"detail": "If an account exists with this email, a recovery code has been sent."}, status=200)
 
         profile, _ = Profile.objects.get_or_create(user=user)
@@ -658,9 +655,8 @@ class ForgotPasswordConfirm(APIView):
         if len(new_password) < 8:
             return Response({"error": "Password must be at least 8 characters"}, status=400)
 
-        try:
-            user = User.objects.get(email=email)
-        except User.DoesNotExist:
+        user = User.objects.filter(email=email).first()
+        if user is None:
             return Response({"error": "Invalid request"}, status=400)
 
         ok, msg = _verify_security_code(user, code, "password_reset")
@@ -681,9 +677,8 @@ class ForgotPasswordResendCode(APIView):
         if not email:
             return Response({"error": "Email is required"}, status=400)
 
-        try:
-            user = User.objects.get(email=email)
-        except User.DoesNotExist:
+        user = User.objects.filter(email=email).first()
+        if user is None:
             return Response({"detail": "If an account exists, a new code has been sent."}, status=200)
 
         profile, _ = Profile.objects.get_or_create(user=user)
