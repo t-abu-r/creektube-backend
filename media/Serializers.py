@@ -218,7 +218,7 @@ class VideoSerializer(serializers.ModelSerializer):
         return None
 
     def get_comments(self, obj):
-        comments = obj.comments.filter(author__is_active=True).order_by('-is_pinned', '-timestamp')
+        comments = obj.comments.filter(parent=None, author__is_active=True).order_by('-is_pinned', '-timestamp')
         return CommentSerializer(comments, many=True, context=self.context).data
 
     def get_author_id(self, obj):
