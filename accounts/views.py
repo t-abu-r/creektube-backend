@@ -422,7 +422,7 @@ class ResetPasswordView(APIView):
                 f"Hi,\n\nWe received a request to reset your CreekTube password. "
                 f"Click the link below to choose a new one:\n\n{reset_link}\n\n"
                 f"If you didn't request this, you can safely ignore this email.\n\n"
-                f"This link will expire in 24 hours.\n\n— The CreekTube Team"
+                f"This link will expire in 15 minutes.\n\n— The CreekTube Team"
             )
             html_content = f"""
             <div style="font-family: Arial, sans-serif; max-width: 480px; margin: auto; padding: 24px; border: 1px solid #eee; border-radius: 8px;">
@@ -433,7 +433,7 @@ class ResetPasswordView(APIView):
                     <a href="{reset_link}" style="background-color: #ff3d3d; color: #fff; padding: 12px 24px; text-decoration: none; border-radius: 6px; font-weight: bold;">Reset Password</a>
                 </p>
                 <p style="font-size: 13px; color: #666;">If the button doesn't work, copy and paste this link into your browser:<br><a href="{reset_link}">{reset_link}</a></p>
-                <p style="font-size: 13px; color: #666;">This link will expire in 24 hours.</p>
+                <p style="font-size: 13px; color: #666;">This link will expire in 15 minutes.</p>
                 <hr style="border: none; border-top: 1px solid #eee; margin: 24px 0;">
                 <p style="font-size: 12px; color: #999;">— The CreekTube Team</p>
             </div>
@@ -694,7 +694,7 @@ def _send_forgot_password_email(user, reset_link):
         f"Hi,\n\nWe received a request to reset your CreekTube password. "
         f"Click the link below to choose a new one:\n\n{reset_link}\n\n"
         f"If you didn't request this, you can safely ignore this email.\n\n"
-        f"This link will expire in 24 hours.\n\n— The CreekTube Team"
+        f"This link will expire in 15 minutes.\n\n— The CreekTube Team"
     )
     html_content = f"""
     <div style="font-family: Arial, sans-serif; max-width: 480px; margin: auto; padding: 24px; border: 1px solid #eee; border-radius: 8px;">
@@ -704,7 +704,7 @@ def _send_forgot_password_email(user, reset_link):
         <p style="text-align: center; margin: 32px 0;">
             <a href="{reset_link}" style="background-color: #ff3d3d; color: #fff; padding: 12px 24px; text-decoration: none; border-radius: 6px; font-weight: bold;">Reset Password</a>
         </p>
-        <p style="font-size: 13px; color: #666;">This link will expire in 24 hours.</p>
+        <p style="font-size: 13px; color: #666;">This link will expire in 15 minutes.</p>
         <hr style="border: none; border-top: 1px solid #eee; margin: 24px 0;">
         <p style="font-size: 12px; color: #999;">— The CreekTube Team</p>
     </div>

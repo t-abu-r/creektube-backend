@@ -137,7 +137,7 @@ EMAIL_USE_TLS = os.environ.get("EMAIL_USE_TLS", "True").lower() == "true"
 EMAIL_HOST_USER = os.environ.get("EMAIL_HOST_USER")
 EMAIL_HOST_PASSWORD = os.environ.get("EMAIL_HOST_PASSWORD")
 DEFAULT_FROM_EMAIL = os.environ.get("DEFAULT_FROM_EMAIL", f"OutReach <outreach@germanypathway.com>" if EMAIL_HOST_USER else None)
-PASSWORD_RESET_TIMEOUT = _int_env("PASSWORD_RESET_TIMEOUT", 60 * 60 * 24)
+PASSWORD_RESET_TIMEOUT = 60 * 15
 
 # Cloudinary settings
 CLOUDINARY_STORAGE = {
