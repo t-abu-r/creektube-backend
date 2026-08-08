@@ -25,6 +25,7 @@ urlpatterns = [
     # MOD PANEL
     path("mod-panel/", ModPanel.as_view()),
     path("set-account-active/", SetAccountActive.as_view(), name="SetAccountActive"),
+    path("mod-logs/", ModActionLogs.as_view(), name="ModActionLogs"),
     path("getmod/", IfModerator.as_view(), name="GetMod"),
     path("mod-panel/searchusers/", SearchUsersMod.as_view(), name="GetModList"),
 

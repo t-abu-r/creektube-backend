@@ -14,12 +14,38 @@ class ModeratorUserAdmin(UserAdmin):
 
     @admin.action(description="Deactivate selected accounts (hide all content)")
     def deactivate_accounts(self, request, queryset):
-        updated = queryset.exclude(is_superuser=True).exclude(pk=request.user.pk).update(is_active=False)
+        from media.models import ModActionLog
+        queryset = queryset.exclude(is_superuser=True).exclude(pk=request.user.pk)
+        for user in queryset:
+            if not user.is_active:
+                continue
+            user.is_active = False
+            user.save(update_fields=["is_active"])
+            ModActionLog.objects.create(
+                target=user,
+                moderator=request.user,
+                action="deactivate",
+                reason="Deactivated via admin panel",
+            )
+        updated = queryset.count()
         self.message_user(request, f"Deactivated {updated} account(s).")
 
     @admin.action(description="Reactivate selected accounts")
     def reactivate_accounts(self, request, queryset):
-        updated = queryset.update(is_active=True)
+        from media.models import ModActionLog
+        updated = 0
+        for user in queryset:
+            if user.is_active:
+                continue
+            user.is_active = True
+            user.save(update_fields=["is_active"])
+            ModActionLog.objects.create(
+                target=user,
+                moderator=request.user,
+                action="reactivate",
+                reason="Reactivated via admin panel",
+            )
+            updated += 1
         self.message_user(request, f"Reactivated {updated} account(s).")
 
 

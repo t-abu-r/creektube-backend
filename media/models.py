@@ -25,6 +25,25 @@ class MediaProfile(models.Model):
         return self.user.username
 
 
+class ModActionLog(models.Model):
+    ACTION_CHOICES = [
+        ("deactivate", "Soft-ban (deactivate)"),
+        ("reactivate", "Reactivate"),
+    ]
+
+    target = models.ForeignKey(User, on_delete=models.CASCADE, related_name="mod_action_logs")
+    moderator = models.ForeignKey(User, on_delete=models.CASCADE, related_name="moderator_actions")
+    action = models.CharField(max_length=20, choices=ACTION_CHOICES)
+    reason = models.TextField(blank=True, default="")
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ["-created_at"]
+
+    def __str__(self):
+        return f"{self.moderator.username} {self.action} {self.target.username}"
+
+
 class Video(models.Model):
     VISIBILITY_CHOICES = [
         ("public", "Public"),

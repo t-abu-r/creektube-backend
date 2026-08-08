@@ -10,7 +10,8 @@ from .permissions import IsModerator
 from .Serializers import *
 from accounts.serializers import ProfileSerializer
 from .models import (Video, Comment, CommentLike, CategoryVideo, MediaProfile, Like,
-                     DisPike, Creek, WatchEvent, UploadRateLimit, Notification, Snip, SnipLike)
+                     DisPike, Creek, WatchEvent, UploadRateLimit, Notification, Snip, SnipLike,
+                     ModActionLog)
 from django.db.models import Count, Q, Sum, Avg, F, Max
 from . import ranking
 import logging
@@ -780,6 +781,8 @@ class SetAccountActive(APIView):
             return Response({"error": "Account ID required"}, status=400)
         if active is None:
             return Response({"error": "active boolean required"}, status=400)
+        if isinstance(active, str):
+            active = active.strip().lower() in ("1", "true", "yes", "on")
 
         try:
             profile_media = MediaProfile.objects.get(id=account_id)
@@ -793,6 +796,15 @@ class SetAccountActive(APIView):
         if user == request.user:
             return Response({"error": "You cannot modify your own account"}, status=400)
 
+        target_profile = getattr(user, "mediaprofile", None)
+        if active is False and target_profile and target_profile.moderator:
+            return Response({"error": "You cannot deactivate another moderator's account"}, status=400)
+
+        if active is False:
+            reason = (request.data.get("reason") or "").strip()
+            if not reason:
+                return Response({"error": "A reason is required when deactivating an account"}, status=400)
+
         user.is_active = bool(active)
         user.save(update_fields=["is_active"])
 
@@ -801,10 +813,41 @@ class SetAccountActive(APIView):
             from rest_framework_simplejwt.token_blacklist.models import OutstandingToken
             OutstandingToken.objects.filter(user=user).delete()
 
+        ModActionLog.objects.create(
+            target=user,
+            moderator=request.user,
+            action="deactivate" if not user.is_active else "reactivate",
+            reason=reason if not user.is_active else (request.data.get("reason") or "").strip(),
+        )
+
         return Response({
             "detail": "Account deactivated" if not user.is_active else "Account reactivated",
             "active": user.is_active,
         }, status=200)
+
+
+class ModActionLogs(APIView):
+    """
+    Moderator tool: list every soft-ban/deactivation and reactivation,
+    visible to all moderators.
+    """
+    permission_classes = [IsModerator]
+
+    def get(self, request):
+        logs = ModActionLog.objects.select_related("target", "moderator")[:200]
+        data = [
+            {
+                "id": log.pk,
+                "target": log.target.username,
+                "target_id": log.target.pk,
+                "moderator": log.moderator.username,
+                "action": log.action,
+                "reason": log.reason,
+                "created_at": log.created_at.isoformat(),
+            }
+            for log in logs
+        ]
+        return Response(data, status=200)
 
 
 # ---------------------------

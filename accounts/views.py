@@ -211,6 +211,14 @@ class JWTLoginView(APIView):
             user_obj = User.objects.get(email=email, username=username)
         except User.DoesNotExist:
             return Response({"error": "Email or username or password is incorrect"}, status=400)
+        if not user_obj.is_active:
+            return Response(
+                {
+                    "error": "account_soft_banned",
+                    "detail": "Your account has been soft-banned by our moderators. To appeal, join our Discord server: https://discord.gg/3vCZw4UXKn",
+                },
+                status=403,
+            )
         user = authenticate(username=username, password=password)
         if user is None:
             return Response({"error": "Invalid credentials"}, status=400)
@@ -344,6 +352,14 @@ class CookieTokenLoginView(APIView):
             user_obj = User.objects.get(username=username)
         except User.DoesNotExist:
             return Response({"error": "Username or password is incorrect"}, status=400)
+        if not user_obj.is_active:
+            return Response(
+                {
+                    "error": "account_soft_banned",
+                    "detail": "Your account has been soft-banned by our moderators. To appeal, join our Discord server: https://discord.gg/3vCZw4UXKn",
+                },
+                status=403,
+            )
         user = authenticate(username=username, password=password)
         if user is None:
             return Response({"error": "Invalid credentials"}, status=400)
