@@ -689,6 +689,20 @@ class SearchUsers(APIView):
         serializer = MediaProfileSerializer(users, many=True, context={'request': request})
         return Response(serializer.data, status=status.HTTP_200_OK)
 
+class SearchUsersMod(APIView):
+    permission_classes = [IsModerator]
+
+    def get(self, request):
+        q = request.query_params.get("q", "").strip()
+        if not q:
+            return Response([], status=status.HTTP_200_OK)
+
+        users = MediaProfile.objects.filter(
+            Q(user__username__icontains=q)
+        ).select_related('user')[:8]
+
+        serializer = MediaProfileSerializer(users, many=True, context={'request': request})
+        return Response(serializer.data, status=status.HTTP_200_OK)
 
 class IfModerator(APIView):
     permission_classes = [IsModerator]
