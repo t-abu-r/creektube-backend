@@ -10,6 +10,7 @@ from rest_framework.parsers import MultiPartParser, FormParser
 from django.contrib.auth.models import User
 from rest_framework.permissions import IsAuthenticated, AllowAny
 from rest_framework_simplejwt.tokens import RefreshToken, AccessToken
+from rest_framework_simplejwt.token_blacklist.models import OutstandingToken, BlacklistedToken
 from rest_framework.decorators import api_view, permission_classes
 from .tokens import account_activation_token
 from django.contrib.auth import get_user_model
@@ -92,6 +93,11 @@ def _set_auth_cookies(response, access_token, refresh_token):
         key="authenticated", value="true", httponly=False,
         secure=cookie_secure, samesite=cookie_samesite, max_age=access_max_age, path="/",
     )
+
+
+def _blacklist_all_for_user(user):
+    for token in OutstandingToken.objects.filter(user=user):
+        BlacklistedToken.objects.get_or_create(token=token)
 
 
 def _clear_auth_cookies(response):
@@ -223,7 +229,10 @@ class JWTLogoutView(APIView):
             return Response({"error": "Refresh token is required"}, status=HTTP_400_BAD_REQUEST)
         try:
             token = RefreshToken(refresh_token)
+            user = User.objects.filter(pk=token.payload.get("user_id")).first()
             token.blacklist()
+            if user is not None:
+                _blacklist_all_for_user(user)
             return Response({"message": "Logged out successfully"}, status=HTTP_205_RESET_CONTENT)
         except Exception as e:
             return Response({"error": "Invalid or expired refresh token"}, status=HTTP_400_BAD_REQUEST)
@@ -342,7 +351,7 @@ class CookieTokenLoginView(APIView):
         refresh = RefreshToken.for_user(user)
         access_token = str(refresh.access_token)
         refresh_token = str(refresh)
-        response = Response({"access": access_token, "detail": "Login successful"})
+        response = Response({"access": access_token, "refresh": refresh_token, "detail": "Login successful"})
         _set_auth_cookies(response, access_token, refresh_token)
         return response
 
@@ -350,7 +359,7 @@ class CookieTokenLoginView(APIView):
 class CookieTokenRefreshView(APIView):
     permission_classes = [AllowAny]
     def post(self, request):
-        refresh_token = request.COOKIES.get("refresh_token") or request.data.get("refresh")
+        refresh_token = request.data.get("refresh") or request.COOKIES.get("refresh_token")
         if not refresh_token:
             return Response({"error": "Refresh token not found"}, status=401)
         try:
@@ -361,7 +370,7 @@ class CookieTokenRefreshView(APIView):
             new_access = str(refresh.access_token)
             new_refresh = str(refresh)
             refresh.blacklist()
-            response = Response({"access": new_access, "detail": "Token refreshed"})
+            response = Response({"access": new_access, "refresh": new_refresh, "detail": "Token refreshed"})
             _set_auth_cookies(response, new_access, new_refresh)
             return response
         except Exception:
@@ -371,13 +380,17 @@ class CookieTokenRefreshView(APIView):
 class CookieTokenLogoutView(APIView):
     permission_classes = [AllowAny]
     def post(self, request):
-        refresh_token = request.COOKIES.get("refresh_token") or request.data.get("refresh")
+        refresh_token = request.data.get("refresh") or request.COOKIES.get("refresh_token")
+        user = None
         if refresh_token:
             try:
                 token = RefreshToken(refresh_token)
+                user = User.objects.filter(pk=token.payload.get("user_id")).first()
                 token.blacklist()
             except Exception:
                 pass
+        if user is not None:
+            _blacklist_all_for_user(user)
         response = Response({"detail": "Logged out successfully"}, status=205)
         _clear_auth_cookies(response)
         return response
