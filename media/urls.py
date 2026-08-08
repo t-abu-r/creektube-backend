@@ -2,19 +2,22 @@ from django.urls import path
 from .views import *
 
 urlpatterns = [
+    # GET VIDEO
     path("logingetvideo/", LoginGetVideo.as_view(), name="LoginGetVideo"),
     path("guestgetvideo/", GuestGetVideo.as_view(), name="GuestGetVideo"),
     path("watchvideo/", LoginWatchVideo.as_view(), name="WatchVideo"),
     path("guestwatchvideo/", GuestWatchVideo.as_view(), name="GuestWatchVideo"),
-    # VIDEO UPLOAD!!!!
+    path("searchvideo/", SearchVideo.as_view(), name="SearchVideo"),
     path("getownvideo/", GetOwnVideo.as_view(), name="GetOwnVideo"),
+
+    # VIDEO/RELATED UPLOAD!!!!
     path("uploadvideo/", UploadVideo.as_view(), name="UploadVideo"),
     path("uploadcommentvideo/", UploadCommentVideo.as_view(), name="UploadCommentVideo"),
     path("pikevideo/", PikeVideo.as_view(), name="PikeVideo"),
     path("dispikevideo/", DisPikeVideo.as_view(), name="DisPikeVideo"),
     path("creekaccount/", CreekAccount.as_view(), name="CreekAccount"),
-    path("studio/", Studio.as_view(), name="Studio"),
-    path('studio/videos/<int:video_id>/', StudioVideoDelete.as_view(), name='studio-video-delete'),
+
+
     path("categories/", Categories.as_view(), name="Categories"),
     path("categories/manage/", CategoryManage.as_view(), name="CategoryManage"),
     path("comment/", CommentVideo.as_view(), name="CommentVideo"),
@@ -23,9 +26,9 @@ urlpatterns = [
     path("mod-panel/", ModPanel.as_view()),
     path("set-account-active/", SetAccountActive.as_view(), name="SetAccountActive"),
     path("getmod/", IfModerator.as_view(), name="GetMod"),
-    path("searchvideo/", SearchVideo.as_view(), name="SearchVideo"),
+
     path("searchusers/", SearchUsers.as_view(), name="SearchUsers"),
-    path("studio/comments/", StudioComments.as_view(), name="StudioComments"),
+
     path("account/", Account.as_view(), name="GetAccount"),
     path("account/banner/", SetBanner.as_view(), name="SetBanner"),
     path("trackretention/", TrackRetention.as_view(), name="TrackRetention"),
@@ -49,6 +52,12 @@ urlpatterns = [
     path("snip/pincomment/", PinSnipComment.as_view(), name="PinSnipComment"),
     path("snip/studio/comments/", SnipStudioComments.as_view(), name="SnipStudioComments"),
     path("snip/trackretention/", TrackSnipRetention.as_view(), name="TrackSnipRetention"),
+
+
+    # STUDIO
+    path("studio/", Studio.as_view(), name="Studio"),
+    path('studio/videos/<int:video_id>/', StudioVideoDelete.as_view(), name='studio-video-delete'),
+    path("studio/comments/", StudioComments.as_view(), name="StudioComments"),
     path("analytics/", ChannelAnalytics.as_view(), name="ChannelAnalytics"),
     path("history/", WatchHistory.as_view(), name="WatchHistory"),
 ]

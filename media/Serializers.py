@@ -50,6 +50,14 @@ class MediaProfileSerializer(serializers.ModelSerializer):
 
 class CategoryVideoSerializer(serializers.ModelSerializer):
     video_count = serializers.IntegerField(read_only=True)
+    count_videos = serializers.SerializerMethodField()
+
+    class Meta:
+        model = CategoryVideo
+        fields = ["id", "name", "slug", "video_count", "count_videos"]
+
+    def get_count_videos(self, obj):
+        return obj.count_videos
 
 
 class LikeSerializer(serializers.ModelSerializer):

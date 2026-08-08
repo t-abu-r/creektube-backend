@@ -374,7 +374,8 @@ class Categories(APIView):
             defaults={"name": "Shortform Videos"}
         )
         categories = CategoryVideo.objects.annotate(
-            video_count=Count('videos', filter=Q(videos__author__is_active=True))
+            video_count=Count('videos', filter=Q(videos__author__is_active=True)),
+            count_videos=Count('videos', filter=Q(videos__author__is_active=True)) + Count('snips', filter=Q(snips__author__is_active=True))
         )
         serializer = CategoryVideoSerializer(categories, many=True)
         return Response(serializer.data, status=status.HTTP_200_OK)
@@ -1010,15 +1011,19 @@ class StudioComments(APIView):
 
     def get(self, request):
         videos = Video.objects.filter(author=request.user)
-        comments = Comment.objects.filter(video__in=videos).select_related('author', 'video').order_by('-timestamp')
+        snips = Snip.objects.filter(author=request.user)
+        video_comments = Comment.objects.filter(video__in=videos).select_related('author', 'video')
+        snip_comments = Comment.objects.filter(snip__in=snips).select_related('author', 'snip')
+        comments = (video_comments | snip_comments).order_by('-timestamp')
         data = [{
             'id': c.id,
             'text': c.text,
             'author': c.author.username,
-            'video_id': c.video.id,
-            'video_title': c.video.title,
+            'video_id': c.video.id if c.video else c.snip.id,
+            'video_title': c.video.title if c.video else c.snip.title,
             'timestamp': c.timestamp,
             'is_pinned': c.is_pinned,
+            'is_snip': c.snip is not None,
         } for c in comments]
         return Response(data, status=200)
 
@@ -1027,8 +1032,9 @@ class StudioComments(APIView):
         if not comment_id:
             return Response({'detail': 'Comment ID required'}, status=400)
         try:
-            comment = Comment.objects.select_related('video').get(
-                id=comment_id, video__author=request.user
+            comment = Comment.objects.select_related('video', 'snip').get(
+                Q(video__author=request.user) | Q(snip__author=request.user),
+                id=comment_id,
             )
             comment.delete()
             return Response(status=204)

@@ -10,6 +10,9 @@ class CategoryVideo(models.Model):
     def __str__(self):
         return self.name
 
+    def count_videos(self):
+        return self.videos.count() + self.snips.count()
+
 
 class MediaProfile(models.Model):
     user = models.OneToOneField(User, on_delete=models.CASCADE)
@@ -71,6 +74,13 @@ class Snip(models.Model):
     is_approved = models.BooleanField(default=False)
     view_count = models.PositiveIntegerField(default=0)
     like_count = models.PositiveIntegerField(default=0)
+    category = models.ForeignKey(
+        CategoryVideo,
+        null=True,
+        blank=True,
+        on_delete=models.SET_NULL,
+        related_name="snips",
+    )
 
     class Meta:
         ordering = ['-timestamp']
