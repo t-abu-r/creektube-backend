@@ -12,6 +12,7 @@ urlpatterns = [
 
     # VIDEO/RELATED UPLOAD!!!!
     path("uploadvideo/", UploadVideo.as_view(), name="UploadVideo"),
+    path("youtube/add/", AddYouTubeVideo.as_view(), name="AddYouTubeVideo"),
     path("uploadcommentvideo/", UploadCommentVideo.as_view(), name="UploadCommentVideo"),
     path("pikevideo/", PikeVideo.as_view(), name="PikeVideo"),
     path("dispikevideo/", DisPikeVideo.as_view(), name="DisPikeVideo"),

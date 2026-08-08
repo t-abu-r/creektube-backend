@@ -50,6 +50,10 @@ class Video(models.Model):
         ("unlisted", "Unlisted"),
         ("private", "Private"),
     ]
+    SOURCE_TYPE_CHOICES = [
+        ("CREEKTUBE", "CreekTube"),
+        ("YOUTUBE", "YouTube"),
+    ]
 
     author = models.ForeignKey(User, on_delete=models.CASCADE)
     category = models.ForeignKey(
@@ -62,7 +66,11 @@ class Video(models.Model):
     title = models.CharField(max_length=100)
     description = models.TextField()
     thumbnail = models.TextField(blank=True, default="")
-    video = models.TextField()
+    video = models.TextField(blank=True, default="")
+    source_type = models.CharField(max_length=20, choices=SOURCE_TYPE_CHOICES, default="CREEKTUBE")
+    youtube_video_id = models.CharField(max_length=11, blank=True, default="")
+    youtube_channel_id = models.CharField(max_length=64, blank=True, default="")
+    youtube_channel_name = models.CharField(max_length=255, blank=True, default="")
     video_public_id = models.CharField(max_length=255, blank=True, default="")
     thumbnail_public_id = models.CharField(max_length=255, blank=True, default="")
     visibility = models.CharField(max_length=10, choices=VISIBILITY_CHOICES, default="public")

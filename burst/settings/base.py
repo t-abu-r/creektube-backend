@@ -146,6 +146,10 @@ CLOUDINARY_STORAGE = {
     'API_SECRET': os.environ.get('CLOUDINARY_API_SECRET')
 }
 
+# YouTube Data API (optional). Used to enrich metadata when creators add
+# YouTube videos. Missing key = graceful fallback, native behavior unchanged.
+YOUTUBE_API_KEY = os.environ.get("YOUTUBE_API_KEY", "")
+
 # Jazzmin admin settings
 JAZZMIN_SETTINGS = {
     "site_title": "CreekTube Admin",

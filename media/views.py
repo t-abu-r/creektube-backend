@@ -14,6 +14,7 @@ from .models import (Video, Comment, CommentLike, CategoryVideo, MediaProfile, L
                      ModActionLog)
 from django.db.models import Count, Q, Sum, Avg, F, Max
 from . import ranking
+from .youtube import normalize_youtube_url, get_video_metadata, youtube_thumbnail_url
 import logging
 from django.db.models.functions import TruncDate
 logger = logging.getLogger(__name__)
@@ -1060,6 +1061,74 @@ class UploadVideo(APIView):
         record_upload(request.user)
 
         serializer = VideoSerializer(video_instance, context={'request': request})
+        return Response(serializer.data, status=201)
+
+
+class AddYouTubeVideo(APIView):
+    """
+    Creators add a YouTube video to CreekTube by URL or video ID.
+
+    The source_type is ALWAYS set server-side to YOUTUBE — the client can
+    never forge a source. YouTube media is never downloaded or stored; only
+    the 11-character video ID (plus optional channel attribution) is kept.
+    """
+
+    permission_classes = [IsAuthenticated]
+
+    def post(self, request):
+        if not check_upload_rate_limit(request.user):
+            return Response(
+                {"message": "Upload rate limit reached. Please wait before uploading again."},
+                status=429,
+            )
+
+        source = (
+            request.data.get("youtube_url")
+            or request.data.get("youtube_video_id")
+            or ""
+        ).strip()
+        video_id = normalize_youtube_url(source)
+        if not video_id:
+            return Response(
+                {"detail": "A valid YouTube video URL or ID is required"},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        title = (request.data.get("title") or "").strip()
+        description = (request.data.get("description") or "").strip()
+        visibility = request.data.get("visibility", "public")
+        if visibility not in ("public", "unlisted", "private"):
+            visibility = "public"
+
+        metadata = get_video_metadata(video_id) or {}
+
+        category_obj = None
+        category = request.data.get("category")
+        if category:
+            category_obj, _ = CategoryVideo.objects.get_or_create(
+                slug=category,
+                defaults={"name": category.replace("-", " ").title()},
+            )
+
+        video = Video.objects.create(
+            author=request.user,
+            category=category_obj,
+            title=title or metadata.get("title") or "YouTube video",
+            description=description or metadata.get("description") or "",
+            thumbnail=youtube_thumbnail_url(video_id),
+            video="",
+            source_type="YOUTUBE",
+            youtube_video_id=video_id,
+            youtube_channel_id=metadata.get("channel_id", ""),
+            youtube_channel_name=metadata.get("channel_name", ""),
+            visibility=visibility,
+            timestamp=timezone.now(),
+            is_approved=True,
+        )
+
+        record_upload(request.user)
+
+        serializer = VideoSerializer(video, context={'request': request})
         return Response(serializer.data, status=201)
 
 

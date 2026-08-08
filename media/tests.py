@@ -8,6 +8,8 @@ from rest_framework.test import APIClient
 from . import ranking
 from .models import (CategoryVideo, Creek, DisPike, Like, MediaProfile,
                      Snip, Video, WatchEvent, UploadRateLimit)
+from .youtube import (normalize_youtube_url, validate_youtube_id,
+                      youtube_embed_url, youtube_thumbnail_url, get_video_metadata)
 
 
 def make_video(author, category, hours_old=0, is_approved=True, title="video"):
@@ -443,3 +445,176 @@ class FeedViewTests(TestCase):
         video_data = resp.data["results"][0]
         self.assertIn("view_count", video_data)
         self.assertEqual(video_data["view_count"], 0)
+
+
+# ---------------------------------------------------------------------------
+# YouTube source support
+# ---------------------------------------------------------------------------
+class YouTubeNormalizationTests(TestCase):
+    def test_accepts_watch_url(self):
+        self.assertEqual(
+            normalize_youtube_url("https://www.youtube.com/watch?v=dQw4w9WgXcQ"),
+            "dQw4w9WgXcQ",
+        )
+
+    def test_accepts_watch_url_with_extra_params(self):
+        self.assertEqual(
+            normalize_youtube_url("https://www.youtube.com/watch?v=dQw4w9WgXcQ&list=PL123"),
+            "dQw4w9WgXcQ",
+        )
+
+    def test_accepts_short_url(self):
+        self.assertEqual(normalize_youtube_url("https://youtu.be/dQw4w9WgXcQ"), "dQw4w9WgXcQ")
+
+    def test_accepts_embed_url(self):
+        self.assertEqual(
+            normalize_youtube_url("https://www.youtube.com/embed/dQw4w9WgXcQ"),
+            "dQw4w9WgXcQ",
+        )
+
+    def test_accepts_shorts_url(self):
+        self.assertEqual(
+            normalize_youtube_url("https://www.youtube.com/shorts/dQw4w9WgXcQ"),
+            "dQw4w9WgXcQ",
+        )
+
+    def test_accepts_raw_id(self):
+        self.assertEqual(normalize_youtube_url("dQw4w9WgXcQ"), "dQw4w9WgXcQ")
+
+    def test_rejects_invalid_input(self):
+        for bad in ["", None, "not-a-youtube-url", "https://example.com/x",
+                    "https://www.youtube.com/watch?v=", "dQw4w9WgXc"]:
+            self.assertIsNone(normalize_youtube_url(bad))
+
+    def test_validate_youtube_id(self):
+        self.assertTrue(validate_youtube_id("dQw4w9WgXcQ"))
+        self.assertFalse(validate_youtube_id("dQw4w9WgXcQ!@#"))
+        self.assertFalse(validate_youtube_id(""))
+
+    def test_embed_and_thumbnail_urls(self):
+        self.assertEqual(youtube_embed_url("dQw4w9WgXcQ"), "https://www.youtube.com/embed/dQw4w9WgXcQ")
+        self.assertEqual(youtube_thumbnail_url("dQw4w9WgXcQ"), "https://i.ytimg.com/vi/dQw4w9WgXcQ/hqdefault.jpg")
+        self.assertEqual(youtube_embed_url("nope"), "")
+        self.assertEqual(youtube_thumbnail_url("nope"), "")
+
+    def test_metadata_returns_none_without_api_key(self):
+        self.assertIsNone(get_video_metadata("dQw4w9WgXcQ"))
+
+    def test_metadata_returns_none_for_invalid_id(self):
+        from django.conf import settings
+        with self.settings(YOUTUBE_API_KEY="test-key"):
+            self.assertIsNone(get_video_metadata("invalid"))
+
+
+class AddYouTubeVideoTests(TestCase):
+    def setUp(self):
+        self.client = APIClient()
+        self.user = User.objects.create_user(username="yt_creator", password="pw")
+        self.client.force_authenticate(user=self.user)
+
+    def test_add_youtube_video_requires_auth(self):
+        anon = APIClient()
+        resp = anon.post("/media/youtube/add/", {"youtube_url": "https://youtu.be/dQw4w9WgXcQ"})
+        self.assertEqual(resp.status_code, 401)
+
+    def test_add_youtube_video_stores_id_not_file(self):
+        resp = self.client.post("/media/youtube/add/", {
+            "youtube_url": "https://www.youtube.com/watch?v=dQw4w9WgXcQ",
+            "title": "Never Gonna Give You Up",
+            "description": "A classic.",
+            "category": "music",
+        })
+        self.assertEqual(resp.status_code, 201)
+        data = resp.data
+        self.assertEqual(data["source_type"], "YOUTUBE")
+        self.assertEqual(data["youtube_video_id"], "dQw4w9WgXcQ")
+        self.assertEqual(data["embed_url"], "https://www.youtube.com/embed/dQw4w9WgXcQ")
+        self.assertIn("i.ytimg.com", data["thumbnail"])
+        self.assertIsNone(data["video"])  # no file is stored
+
+        row = Video.objects.get(id=data["id"])
+        self.assertEqual(row.source_type, "YOUTUBE")
+        self.assertEqual(row.youtube_video_id, "dQw4w9WgXcQ")
+        self.assertEqual(row.video, "")
+        self.assertTrue(row.is_approved)
+
+    def test_add_youtube_video_rejects_invalid_url(self):
+        resp = self.client.post("/media/youtube/add/", {"youtube_url": "https://example.com/not-youtube"})
+        self.assertEqual(resp.status_code, 400)
+
+    def test_add_youtube_video_never_trusts_client_source_type(self):
+        resp = self.client.post("/media/youtube/add/", {
+            "youtube_video_id": "dQw4w9WgXcQ",
+            "source_type": "CREEKTUBE",
+        })
+        self.assertEqual(resp.status_code, 201)
+        self.assertEqual(resp.data["source_type"], "YOUTUBE")
+
+
+class UnifiedFeedTests(TestCase):
+    def setUp(self):
+        self.client = APIClient()
+        self.user = User.objects.create_user(username="alice_hybrid", password="pw")
+        self.other = User.objects.create_user(username="bob_hybrid", password="pw")
+        self.gaming = CategoryVideo.objects.create(name="Gaming", slug="gaming")
+        self.client.force_authenticate(user=self.user)
+
+    def test_native_video_serializes_as_creektube_source(self):
+        native = make_video(self.other, self.gaming, title="native_vid")
+        resp = self.client.get("/media/guestgetvideo/?video_id=%d" % native.id)
+        self.assertEqual(resp.status_code, 200)
+        self.assertEqual(resp.data["source_type"], "CREEKTUBE")
+        self.assertIsNone(resp.data["embed_url"])
+
+    def test_youtube_videos_share_the_feed(self):
+        native = make_video(self.other, self.gaming, hours_old=1, title="native")
+        Video.objects.create(
+            author=self.other,
+            category=self.gaming,
+            title="youtube_vid",
+            description="desc",
+            is_approved=True,
+            source_type="YOUTUBE",
+            youtube_video_id="dQw4w9WgXcQ",
+            thumbnail="https://i.ytimg.com/vi/dQw4w9WgXcQ/hqdefault.jpg",
+        )
+        resp = self.client.get("/media/logingetvideo/")
+        self.assertEqual(resp.status_code, 200)
+        results = resp.data["results"]
+        titles = [v["title"] for v in results]
+        self.assertIn("native", titles)
+        self.assertIn("youtube_vid", titles)
+        yt_item = next(v for v in results if v["title"] == "youtube_vid")
+        self.assertEqual(yt_item["source_type"], "YOUTUBE")
+        self.assertEqual(yt_item["youtube_video_id"], "dQw4w9WgXcQ")
+
+    def test_guest_feed_includes_youtube_videos(self):
+        Video.objects.create(
+            author=self.other,
+            category=self.gaming,
+            title="youtube_guest",
+            description="desc",
+            is_approved=True,
+            source_type="YOUTUBE",
+            youtube_video_id="dQw4w9WgXcQ",
+        )
+        resp = self.client.get("/media/guestgetvideo/")
+        self.assertEqual(resp.status_code, 200)
+        self.assertIn("youtube_guest", [v["title"] for v in resp.data["results"]])
+
+    def test_search_includes_youtube_videos(self):
+        Video.objects.create(
+            author=self.other,
+            category=self.gaming,
+            title="CreekTube Search YouTube Test",
+            description="desc",
+            is_approved=True,
+            source_type="YOUTUBE",
+            youtube_video_id="dQw4w9WgXcQ",
+        )
+        resp = self.client.get("/media/searchvideo/?q=Search YouTube Test")
+        self.assertEqual(resp.status_code, 200)
+        yt_items = [v for v in resp.data["videos"] if v["source_type"] == "YOUTUBE"]
+        self.assertEqual(len(yt_items), 1)
+        self.assertEqual(yt_items[0]["youtube_video_id"], "dQw4w9WgXcQ")
+

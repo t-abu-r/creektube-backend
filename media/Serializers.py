@@ -200,13 +200,19 @@ class VideoSerializer(serializers.ModelSerializer):
     category_name = serializers.SerializerMethodField()
     author_id = serializers.SerializerMethodField()
     view_count = serializers.IntegerField(read_only=True)
+    source_type = serializers.CharField(read_only=True)
+    youtube_video_id = serializers.CharField(read_only=True)
+    youtube_channel_id = serializers.CharField(read_only=True)
+    youtube_channel_name = serializers.CharField(read_only=True)
+    embed_url = serializers.SerializerMethodField()
 
     class Meta:
         model = Video
         fields = [
             "id", "category", "category_name", "title", "description", "thumbnail", "video", "visibility",
             "timestamp", "is_approved", "author", "author_id", "author_avatar", "author_active",
-            "comments", "view_count",
+            "comments", "view_count", "source_type", "youtube_video_id", "youtube_channel_id",
+            "youtube_channel_name", "embed_url",
         ]
 
     def get_author_active(self, obj):
@@ -231,6 +237,12 @@ class VideoSerializer(serializers.ModelSerializer):
         if not obj.video:
             return None
         return obj.video
+
+    def get_embed_url(self, obj):
+        if obj.source_type == "YOUTUBE" and obj.youtube_video_id:
+            from .youtube import youtube_embed_url
+            return youtube_embed_url(obj.youtube_video_id)
+        return None
 
     def get_thumbnail(self, obj):
         if not obj.thumbnail:
