@@ -50,4 +50,5 @@ urlpatterns = [
     path("snip/studio/comments/", SnipStudioComments.as_view(), name="SnipStudioComments"),
     path("snip/trackretention/", TrackSnipRetention.as_view(), name="TrackSnipRetention"),
     path("analytics/", ChannelAnalytics.as_view(), name="ChannelAnalytics"),
+    path("history/", WatchHistory.as_view(), name="WatchHistory"),
 ]

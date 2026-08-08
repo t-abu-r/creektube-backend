@@ -11,7 +11,7 @@ from .Serializers import *
 from accounts.serializers import ProfileSerializer
 from .models import (Video, Comment, CommentLike, CategoryVideo, MediaProfile, Like,
                      DisPike, Creek, WatchEvent, UploadRateLimit, Notification, Snip, SnipLike)
-from django.db.models import Count, Q, Sum, Avg, F
+from django.db.models import Count, Q, Sum, Avg, F, Max
 from . import ranking
 import logging
 from django.db.models.functions import TruncDate
@@ -131,9 +131,22 @@ class LoginGetVideo(APIView):
     def get(self, request):
         profile, _ = MediaProfile.objects.get_or_create(user=request.user)
         category_param = request.query_params.get('category', '').strip().lower()
+        sort = request.query_params.get('sort', '').strip().lower()
+        feed = request.query_params.get('feed', '').strip().lower()
 
         if category_param in ['shortform-videos', 'snips']:
-            snips = Snip.objects.filter(is_approved=True, visibility="public", author__is_active=True).select_related('author').order_by('-timestamp')
+            snips = Snip.objects.filter(is_approved=True, visibility="public", author__is_active=True).select_related('author')
+            if feed == 'following':
+                creeked_ids = set(
+                    Creek.objects.filter(author=request.user)
+                    .exclude(account__user__is_active=False)
+                    .values_list('account__user_id', flat=True)
+                )
+                snips = snips.filter(author_id__in=creeked_ids)
+            if sort == 'views':
+                snips = snips.order_by('-view_count')
+            else:
+                snips = snips.order_by('-timestamp')
             total = snips.count()
             try:
                 page = max(int(request.query_params.get('page', 1)), 1)
@@ -191,8 +204,14 @@ class LoginGetVideo(APIView):
         if category_param:
             approved_videos = approved_videos.filter(category__slug=category_param)
 
+        if feed == 'following':
+            approved_videos = approved_videos.filter(author_id__in=creeked_author_ids)
+
         CANDIDATE_LIMIT = 500
-        candidates = list(approved_videos.order_by('-timestamp')[:CANDIDATE_LIMIT])
+        if sort == 'views':
+            candidates = list(approved_videos.order_by('-view_count')[:CANDIDATE_LIMIT])
+        else:
+            candidates = list(approved_videos.order_by('-timestamp')[:CANDIDATE_LIMIT])
 
         # Build co-watch map from user's recent history
         user_recent_ids = ranking.get_user_recent_video_ids(request.user)
@@ -239,9 +258,14 @@ class GuestGetVideo(APIView):
             return Response(serializer.data, status=200)
 
         category_param = request.query_params.get('category', '').strip().lower()
+        sort = request.query_params.get('sort', '').strip().lower()
 
         if category_param in ['shortform-videos', 'snips']:
-            snips = Snip.objects.filter(is_approved=True, visibility="public", author__is_active=True).select_related('author').order_by('-timestamp')
+            snips = Snip.objects.filter(is_approved=True, visibility="public", author__is_active=True).select_related('author')
+            if sort == 'views':
+                snips = snips.order_by('-view_count')
+            else:
+                snips = snips.order_by('-timestamp')
             total = snips.count()
             try:
                 page = max(int(request.query_params.get('page', 1)), 1)
@@ -298,7 +322,10 @@ class GuestGetVideo(APIView):
             approved_videos = approved_videos.filter(category__slug=category_param)
 
         CANDIDATE_LIMIT = 500
-        candidates = list(approved_videos.order_by('-timestamp')[:CANDIDATE_LIMIT])
+        if sort == 'views':
+            candidates = list(approved_videos.order_by('-view_count')[:CANDIDATE_LIMIT])
+        else:
+            candidates = list(approved_videos.order_by('-timestamp')[:CANDIDATE_LIMIT])
         ranked = ranking.rank_videos(candidates, user_interests={}, creeked_author_ids=set())
 
         try:
@@ -1610,3 +1637,40 @@ class ChannelAnalytics(APIView):
             },
             "top_content": {"videos": top_v, "snips": top_s},
         }, status=200)
+
+
+class WatchHistory(APIView):
+    """Watch history for the current user (from WatchEvents)."""
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request):
+        try:
+            limit = max(1, min(int(request.query_params.get("limit", 50)), 100))
+        except (TypeError, ValueError):
+            limit = 50
+
+        videos = (
+            Video.objects.filter(
+                watch_events__user=request.user,
+                is_approved=True,
+                author__is_active=True,
+            )
+            .annotate(last_watched=Max('watch_events__timestamp'))
+            .order_by('-last_watched')[:limit]
+        )
+        snips = (
+            Snip.objects.filter(
+                watch_events__user=request.user,
+                is_approved=True,
+                author__is_active=True,
+            )
+            .annotate(last_watched=Max('watch_events__timestamp'))
+            .order_by('-last_watched')[:limit]
+        )
+
+        video_data = VideoSerializer(videos, many=True, context={'request': request}).data
+        snip_data = SnipSerializer(snips, many=True, context={'request': request}).data
+        for item in snip_data:
+            item['is_snip'] = True
+
+        return Response({"videos": video_data, "snips": snip_data}, status=200)
