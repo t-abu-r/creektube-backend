@@ -23,6 +23,7 @@ urlpatterns = [
     path("categories/manage/", CategoryManage.as_view(), name="CategoryManage"),
     path("comment/", CommentVideo.as_view(), name="CommentVideo"),
     path("pincomment/", PinComment.as_view(), name="PinComment"),
+    path("youtube/channel/", YouTubeChannel.as_view(), name="YouTubeChannel"),
     # MOD PANEL
     path("mod-panel/", ModPanel.as_view()),
     path("set-account-active/", SetAccountActive.as_view(), name="SetAccountActive"),

@@ -93,12 +93,20 @@ class CommentSerializer(serializers.ModelSerializer):
     edited = serializers.BooleanField(read_only=True)
     likes_count = serializers.SerializerMethodField()
     is_liked = serializers.SerializerMethodField()
+    source = serializers.SerializerMethodField()
+    read_only = serializers.SerializerMethodField()
 
     class Meta:
         model = Comment
         fields = ["id", "author", "author_id", "author_avatar", "text", "timestamp",
                   "updated_at", "is_pinned", "edited", "parent", "replies",
-                  "likes_count", "is_liked"]
+                  "likes_count", "is_liked", "source", "read_only"]
+
+    def get_source(self, obj):
+        return "creektube"
+
+    def get_read_only(self, obj):
+        return False
 
     def get_author_id(self, obj):
         try:
@@ -240,6 +248,8 @@ class VideoSerializer(serializers.ModelSerializer):
         return CommentSerializer(comments, many=True, context=self.context).data
 
     def get_author_id(self, obj):
+        if obj.source_type == "YOUTUBE":
+            return None
         try:
             return MediaProfile.objects.get(user=obj.author).id
         except MediaProfile.DoesNotExist:
@@ -262,6 +272,9 @@ class VideoSerializer(serializers.ModelSerializer):
         return obj.thumbnail
 
     def get_author_avatar(self, obj):
+        if obj.source_type == "YOUTUBE" and obj.youtube_channel_id:
+            from .youtube import youtube_channel_avatars_for
+            return youtube_channel_avatars_for([obj.youtube_channel_id]).get(obj.youtube_channel_id)
         try:
             profile = getattr(obj.author, "profile", None)
             if profile and profile.avatar:

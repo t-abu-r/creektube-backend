@@ -17,7 +17,9 @@ from . import ranking
 from .youtube import (normalize_youtube_url, get_video_metadata, youtube_thumbnail_url,
                       validate_youtube_id, build_youtube_feed, get_youtube_video_details,
                       youtube_related_videos, youtube_search_channels,
-                      youtube_duration_seconds, youtube_search_videos)
+                      youtube_duration_seconds, youtube_search_videos,
+                      youtube_comments, youtube_like_counts_for, youtube_channel,
+                      youtube_channel_videos, validate_youtube_channel_id)
 from .content import classify_content_type
 import logging
 from django.db.models.functions import TruncDate
@@ -141,6 +143,50 @@ def boost_youtube_watch_interest(user, video):
         Video.objects.filter(pk=video.pk).update(category=category)
         video.category = category
         record_category_interest(user, category.slug)
+
+
+def ensure_youtube_video(video_id, user=None):
+    """Get-or-create a lightweight stored Video row for a live YouTube ID.
+
+    CreekTube likes/comments are stored against a Video row, so a YouTube
+    video that isn't already part of CreekTube is materialized as a public,
+    pre-approved YOUTUBE row the first time a user interacts with it. The
+    video itself is never downloaded: only metadata + the ID are persisted.
+    """
+    if not validate_youtube_id(video_id):
+        return None
+    video = Video.objects.filter(youtube_video_id=video_id).first()
+    if video:
+        return video
+    metadata = get_video_metadata(video_id) or {}
+    details = get_youtube_video_details(video_id) or {}
+    category = None
+    if metadata.get("category"):
+        category = ensure_category(
+            metadata["category"],
+            metadata.get("category_name") or "",
+        )
+    try:
+        return Video.objects.create(
+            author=user or (Video.objects.first().author if Video.objects.exists() else None),
+            category=category,
+            title=metadata.get("title") or details.get("title") or "YouTube video",
+            description=metadata.get("description") or "",
+            thumbnail=youtube_thumbnail_url(video_id),
+            video="",
+            source_type="YOUTUBE",
+            youtube_video_id=video_id,
+            youtube_channel_id=metadata.get("channel_id") or details.get("youtube_channel_id") or "",
+            youtube_channel_name=metadata.get("channel_name") or details.get("author") or "",
+            visibility="public",
+            timestamp=timezone.now(),
+            is_approved=True,
+            duration=details.get("duration") or 0,
+            content_type=classify_content_type(details.get("duration") or 0),
+        )
+    except Exception as exc:
+        logger.warning("ensure_youtube_video failed for %s: %s", video_id, exc)
+        return None
 
 
 # ---------------------------
@@ -654,7 +700,8 @@ class LoginWatchVideo(APIView):
                 "video": yt_item,
                 "related_videos": youtube_related_videos(video_id),
                 "like": False,
-                "like_count": 0,
+                "like_count": yt_item.get("like_count", 0),
+                "creek_like_count": 0,
                 "dispike": False,
                 "dispike_count": 0,
                 "creek": False,
@@ -679,47 +726,57 @@ class LoginWatchVideo(APIView):
         # Record watch event with spam prevention
         record_view(request.user, video=video)
 
-        # Co-watch powered related videos
-        user_recent_ids = ranking.get_user_recent_video_ids(request.user)
-        if user_recent_ids:
-            cowatch_map = ranking.build_cowatch_map(user_recent_ids, [video.id])
-            # Get co-watch related video IDs, sorted by score
-            sorted_cowatch = sorted(cowatch_map.items(), key=lambda x: x[1], reverse=True)
-            cowatch_video_ids = [vid for vid, _ in sorted_cowatch[:10]]
-            if cowatch_video_ids:
-                cowatch_videos = list(
-                    approved_videos.filter(id__in=cowatch_video_ids)
-                    .select_related('category')
-                    .annotate(
-                        num_likes=Count('likes', distinct=True),
-                        num_dislikes=Count('dispikes', distinct=True),
+        # YouTube rows suggest live YouTube videos; native rows use co-watch.
+        if video.source_type == "YOUTUBE" and video.youtube_video_id:
+            related_videos = youtube_related_videos(video.youtube_video_id)
+        elif video.category:
+            # Co-watch powered related videos
+            user_recent_ids = ranking.get_user_recent_video_ids(request.user)
+            if user_recent_ids:
+                cowatch_map = ranking.build_cowatch_map(user_recent_ids, [video.id])
+                # Get co-watch related video IDs, sorted by score
+                sorted_cowatch = sorted(cowatch_map.items(), key=lambda x: x[1], reverse=True)
+                cowatch_video_ids = [vid for vid, _ in sorted_cowatch[:10]]
+                if cowatch_video_ids:
+                    cowatch_videos = list(
+                        approved_videos.filter(id__in=cowatch_video_ids)
+                        .select_related('category')
+                        .annotate(
+                            num_likes=Count('likes', distinct=True),
+                            num_dislikes=Count('dispikes', distinct=True),
+                        )
                     )
-                )
-                # Sort by co-watch score
-                cowatch_order = {vid: i for i, vid in enumerate(cowatch_video_ids)}
-                cowatch_videos.sort(key=lambda v: cowatch_order.get(v.id, 999))
-                # Fill remaining with category-based
-                remaining = 5 - len(cowatch_videos)
-                if remaining > 0:
-                    cat_vids = list(
+                    # Sort by co-watch score
+                    cowatch_order = {vid: i for i, vid in enumerate(cowatch_video_ids)}
+                    cowatch_videos.sort(key=lambda v: cowatch_order.get(v.id, 999))
+                    # Fill remaining with category-based
+                    remaining = 12 - len(cowatch_videos)
+                    if remaining > 0:
+                        cat_vids = list(
+                            approved_videos.filter(category=video.category)
+                            .exclude(id=video.id)
+                            .exclude(id__in=cowatch_video_ids)
+                            .order_by('-timestamp')[:remaining]
+                        )
+                        cowatch_videos.extend(cat_vids)
+                    related_videos = cowatch_videos[:12]
+                else:
+                    related_videos = list(
                         approved_videos.filter(category=video.category)
                         .exclude(id=video.id)
-                        .exclude(id__in=cowatch_video_ids)
-                        .order_by('-timestamp')[:remaining]
+                        .order_by('-timestamp')[:12]
                     )
-                    cowatch_videos.extend(cat_vids)
-                related_videos = cowatch_videos[:5]
             else:
                 related_videos = list(
                     approved_videos.filter(category=video.category)
                     .exclude(id=video.id)
-                    .order_by('-timestamp')[:5]
+                    .order_by('-timestamp')[:12]
                 )
         else:
             related_videos = list(
                 approved_videos.filter(category=video.category)
                 .exclude(id=video.id)
-                .order_by('-timestamp')[:5]
+                .order_by('-timestamp')[:12]
             )
 
         video_author_channel = MediaProfile.objects.filter(user=video.author).first()
@@ -745,7 +802,11 @@ class LoginWatchVideo(APIView):
             creek = None
             if_creeked = False
 
-        like_count = Like.objects.filter(video=video).count()
+        creek_like_count = Like.objects.filter(video=video).count()
+        if video.source_type == "YOUTUBE" and video.youtube_video_id:
+            like_count = youtube_like_counts_for([video.youtube_video_id]).get(video.youtube_video_id, 0)
+        else:
+            like_count = creek_like_count
         dispike_count = DisPike.objects.filter(video=video).count()
         creek_count = Creek.objects.filter(account=video_author_channel).count() if video_author_channel else 0
 
@@ -754,6 +815,7 @@ class LoginWatchVideo(APIView):
             "related_videos": VideoSerializer(related_videos, many=True, context={'request': request}).data,
             "like": LikeSerializer(like).data if if_liked else False,
             "like_count": like_count,
+            "creek_like_count": creek_like_count,
             "dispike": DisPikeSerializer(dispike).data if if_dispiked else False,
             "dispike_count": dispike_count,
             "creek": CreekSerializer(creek).data if if_creeked else False,
@@ -785,7 +847,8 @@ class GuestWatchVideo(APIView):
                 "video": yt_item,
                 "related_videos": youtube_related_videos(video_id),
                 "like": False,
-                "like_count": 0,
+                "like_count": yt_item.get("like_count", 0),
+                "creek_like_count": 0,
                 "dispike": False,
                 "dispike_count": 0,
                 "creek": False,
@@ -798,11 +861,18 @@ class GuestWatchVideo(APIView):
         approved_videos = Video.objects.filter(is_approved=True, visibility="public", author__is_active=True)
         video_category = video.category
 
-        related_videos = approved_videos.filter(
-            category=video_category
-        ).exclude(id=video_id).order_by('-timestamp')[:5]
+        if video.source_type == "YOUTUBE" and video.youtube_video_id:
+            related_videos = youtube_related_videos(video.youtube_video_id)
+        else:
+            related_videos = approved_videos.filter(
+                category=video_category
+            ).exclude(id=video_id).order_by('-timestamp')[:12]
 
-        like_count = Like.objects.filter(video=video).count()
+        creek_like_count = Like.objects.filter(video=video).count()
+        if video.source_type == "YOUTUBE" and video.youtube_video_id:
+            like_count = youtube_like_counts_for([video.youtube_video_id]).get(video.youtube_video_id, 0)
+        else:
+            like_count = creek_like_count
         dispike_count = DisPike.objects.filter(video=video).count()
         video_author_channel = MediaProfile.objects.filter(user=video.author).first()
         creek_count = Creek.objects.filter(account=video_author_channel).count() if video_author_channel else 0
@@ -812,11 +882,29 @@ class GuestWatchVideo(APIView):
             "related_videos": VideoSerializer(related_videos, many=True, context={'request': request}).data,
             "like": False,
             "like_count": like_count,
+            "creek_like_count": creek_like_count,
             "dispike": False,
             "dispike_count": dispike_count,
             "creek": False,
             "creek_count": creek_count,
         }, status=status.HTTP_200_OK)
+
+
+class YouTubeChannel(APIView):
+    permission_classes = [AllowAny]
+
+    def get(self, request):
+        channel_id = (request.query_params.get('channel_id') or '').strip()
+        if not validate_youtube_channel_id(channel_id):
+            return Response(
+                {'detail': 'A valid YouTube channel ID is required'},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        channel = youtube_channel(channel_id)
+        if not channel:
+            return Response({'detail': 'Channel not found'}, status=status.HTTP_404_NOT_FOUND)
+        videos = youtube_channel_videos(channel_id, limit=24)
+        return Response({'channel': channel, 'videos': videos}, status=status.HTTP_200_OK)
 
 
 # ---------------------------
@@ -1086,16 +1174,24 @@ class CommentVideo(APIView):
 
         video = resolve_video_by_id(video_id, Video.objects.filter(author__is_active=True))
         if video is None:
-            # Live YouTube videos stream YouTube's own comments; CreekTube
-            # comment state does not exist for them.
+            # Live YouTube videos stream YouTube's own comments (read-only).
             if validate_youtube_id(video_id):
-                return Response([], status=status.HTTP_200_OK)
+                return Response(youtube_comments(video_id), status=status.HTTP_200_OK)
             return Response({'message': 'Video not found'}, status=status.HTTP_404_NOT_FOUND)
 
         top_level = Comment.objects.filter(video=video, parent=None, author__is_active=True).select_related('author').order_by('-is_pinned', '-timestamp')
 
         serializer = CommentSerializer(top_level, many=True, context={'request': request})
-        return Response(serializer.data, status=status.HTTP_200_OK)
+        data = serializer.data
+
+        # YouTube rows show live YouTube comments (read-only) alongside any
+        # CreekTube comments the community has added.
+        if video.source_type == "YOUTUBE" and video.youtube_video_id:
+            yt_comments = youtube_comments(video.youtube_video_id)
+            for comment in yt_comments:
+                comment["creek_comment_id"] = None
+            data = yt_comments + data
+        return Response(data, status=status.HTTP_200_OK)
 
 
 @method_decorator(csrf_exempt, name='dispatch')
@@ -1112,8 +1208,12 @@ class UploadCommentVideo(APIView):
             return Response({'message': 'No comment provided'}, status=status.HTTP_400_BAD_REQUEST)
 
         video = resolve_video_by_id(video_id, Video.objects.filter(author__is_active=True))
+        if video is None and validate_youtube_id(video_id):
+            # Live YouTube video: materialize a stored row so the CreekTube
+            # comment lives in our database alongside the read-only YouTube
+            # comments.
+            video = ensure_youtube_video(video_id, user=author)
         if video is None:
-            # Live YouTube videos use YouTube's own comment system.
             return Response(
                 {'message': 'Comments are managed on YouTube for this video'},
                 status=status.HTTP_400_BAD_REQUEST,
@@ -1147,17 +1247,35 @@ class PikeVideo(APIView):
             return Response({"detail": "Video ID required"}, status=status.HTTP_400_BAD_REQUEST)
 
         video = resolve_video_by_id(video_id, Video.objects.filter(author__is_active=True))
+        if video is None and validate_youtube_id(video_id):
+            # Live YouTube video: materialize a stored row so the CreekTube
+            # like is tracked against YouTube's real count.
+            video = ensure_youtube_video(video_id, user=request.user)
         if video is None:
-            # Live YouTube videos (not stored as CreekTube rows) have no like state.
             return Response({"liked": False}, status=status.HTTP_200_OK)
 
         like, created = Like.objects.get_or_create(author=request.user, video=video)
 
+        creek_like_count = Like.objects.filter(video=video).count()
+        if video.source_type == "YOUTUBE" and video.youtube_video_id:
+            like_count = youtube_like_counts_for([video.youtube_video_id]).get(video.youtube_video_id, 0)
+        else:
+            like_count = creek_like_count
+
         if not created:
             like.delete()
-            return Response({"liked": False}, status=status.HTTP_200_OK)
+            creek_like_count = Like.objects.filter(video=video).count()
+            return Response({
+                "liked": False,
+                "like_count": like_count,
+                "creek_like_count": creek_like_count,
+            }, status=status.HTTP_200_OK)
 
-        return Response({"liked": True}, status=status.HTTP_201_CREATED)
+        return Response({
+            "liked": True,
+            "like_count": like_count,
+            "creek_like_count": creek_like_count,
+        }, status=status.HTTP_201_CREATED)
 
 
 @method_decorator(csrf_exempt, name='dispatch')

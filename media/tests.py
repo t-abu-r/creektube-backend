@@ -7,7 +7,7 @@ from django.utils import timezone
 from rest_framework.test import APIClient
 
 from . import ranking
-from .models import (CategoryVideo, Creek, DisPike, Like, MediaProfile,
+from .models import (CategoryVideo, Comment, Creek, DisPike, Like, MediaProfile,
                      Snip, Video, WatchEvent, UploadRateLimit)
 from . import youtube as youtube_module
 from .youtube import (normalize_youtube_url, validate_youtube_id,
@@ -789,11 +789,23 @@ class LiveYouTubeWatchTests(LiveYouTubeMixin, TestCase):
             resp = self.client.post("/media/guestwatchvideo/", {"video_id": "not-a-video-id"})
         self.assertEqual(resp.status_code, 404)
 
-    def test_like_on_live_youtube_is_graceful(self):
+    def test_like_on_live_youtube_is_saved(self):
         self.client.force_authenticate(user=self.user)
+        resp = self.client.post("/media/pikevideo/", {"id": "dQw4w9WgXcQ"})
+        self.assertEqual(resp.status_code, 201)
+        self.assertIs(resp.data["liked"], True)
+        self.assertEqual(resp.data["creek_like_count"], 1)
+        self.assertGreaterEqual(resp.data["like_count"], 0)
+        # A stored row was materialized so the creek like persists.
+        self.assertTrue(Video.objects.filter(youtube_video_id="dQw4w9WgXcQ").exists())
         resp = self.client.post("/media/pikevideo/", {"id": "dQw4w9WgXcQ"})
         self.assertEqual(resp.status_code, 200)
         self.assertIs(resp.data["liked"], False)
+        self.assertEqual(resp.data["creek_like_count"], 0)
+        # Dislikes work too once a stored row exists.
+        resp = self.client.post("/media/dispikevideo/", {"id": "dQw4w9WgXcQ"})
+        self.assertEqual(resp.status_code, 201)
+        self.assertIs(resp.data["dispike"], True)
         resp = self.client.post("/media/dispikevideo/", {"id": "dQw4w9WgXcQ"})
         self.assertEqual(resp.status_code, 200)
         self.assertIs(resp.data["dispike"], False)
@@ -803,10 +815,17 @@ class LiveYouTubeWatchTests(LiveYouTubeMixin, TestCase):
         self.assertEqual(resp.status_code, 200)
         self.assertEqual(resp.data, [])
 
-    def test_comment_submit_on_live_youtube_rejected(self):
+    def test_comment_submit_on_live_youtube_is_saved(self):
         self.client.force_authenticate(user=self.user)
         resp = self.client.post("/media/uploadcommentvideo/", {"video_id": "dQw4w9WgXcQ", "comment": "hi"})
-        self.assertEqual(resp.status_code, 400)
+        self.assertEqual(resp.status_code, 201)
+        self.assertEqual(resp.data["comment"]["text"], "hi")
+        # CreekTube comments on a live YouTube video are persisted, not rejected.
+        video = Video.objects.get(youtube_video_id="dQw4w9WgXcQ")
+        self.assertTrue(Comment.objects.filter(video=video, text="hi").exists())
+        resp = self.client.get("/media/comment/?video_id=dQw4w9WgXcQ")
+        self.assertEqual(resp.status_code, 200)
+        self.assertEqual(resp.data[0]["text"], "hi")
 
     def test_trackretention_on_live_youtube_is_ok(self):
         self.client.force_authenticate(user=self.user)
