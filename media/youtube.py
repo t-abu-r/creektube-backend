@@ -232,22 +232,29 @@ def _feed_queries_for(user, interest_categories=None, feed="following", history_
     return [q for q in (queries or DEFAULT_FEED_QUERIES) if q]
 
 
-def youtube_search_results(query, max_results=FEED_MAX_RESULTS_PER_QUERY):
-    """Search YouTube for ``query`` and return raw API items (cached)."""
+def youtube_search_results(query, max_results=FEED_MAX_RESULTS_PER_QUERY, extra_params=None):
+    """Search YouTube for ``query`` and return raw API items (cached).
+
+    ``extra_params`` are merged into the search request (e.g.
+    ``{"videoDuration": "short"}`` to only surface YouTube Shorts).
+    """
     query = (query or "").strip()
     if not query or not _api_key():
         return []
-    cache_key = ("search", query, max_results)
+    cache_key = ("search", query, max_results, tuple(sorted((extra_params or {}).items())))
     cached = _cache_get(cache_key)
     if cached is not None:
         return cached
-    data = _youtube_request("search", {
+    params = {
         "part": "snippet",
         "type": "video",
         "q": query,
         "maxResults": max_results,
         "safeSearch": "moderate",
-    })
+    }
+    if extra_params:
+        params.update(extra_params)
+    data = _youtube_request("search", params)
     items = (data or {}).get("items") or []
     _cache_set(cache_key, items)
     return items
@@ -556,6 +563,42 @@ def build_youtube_feed(user=None, interest_categories=None, limit=FEED_TOTAL_ITE
     return items
 
 
+def build_youtube_snips_feed(user=None, interest_categories=None, limit=FEED_TOTAL_ITEMS, feed=None, history_keywords=None):
+    """Build a list of live YouTube Shorts for the Snips feed.
+
+    Same shape as ``build_youtube_feed`` but the search restricts to short
+    video durations, so only short-form YouTube content is mixed into the
+    Snips feed. Durations are still double-checked so an item is only ever
+    labelled ``SNIP`` when it is actually under the Snip threshold.
+    """
+    if not _api_key() or limit <= 0:
+        return []
+
+    queries = _feed_queries_for(user, interest_categories, feed=feed, history_keywords=history_keywords)
+    items = []
+    seen_ids = set()
+    for query in queries:
+        for raw in youtube_search_results(query, extra_params={"videoDuration": "short"}):
+            item = youtube_feed_item(raw, category_slug=query, category_name=query.title())
+            if not item or item["id"] in seen_ids:
+                continue
+            seen_ids.add(item["id"])
+            items.append(item)
+        if len(items) >= limit:
+            break
+
+    items = items[:limit]
+    if items:
+        counts = _view_counts_for([item["id"] for item in items])
+        durations = _durations_for([item["id"] for item in items])
+        for item in items:
+            item["view_count"] = counts.get(item["id"], 0)
+            item["duration"] = durations.get(item["id"], 0)
+            item["content_type"] = classify_content_type(item["duration"])
+        _attach_youtube_enrichment(items)
+    return items
+
+
 def get_youtube_video_details(video_id):
     """Fetch one video's snippet + statistics + contentDetails.
 
@@ -749,7 +792,10 @@ def youtube_comments(video_id, max_results=20):
     comments = []
     for item in (data or {}).get("items") or []:
         thread = item.get("snippet") or {}
-        top = _youtube_comment_dict(thread, parent=None)
+        # The actual top-level comment lives inside ``topLevelComment``; the
+        # thread snippet itself has no ``textDisplay``.
+        top_level = thread.get("topLevelComment") or {}
+        top = _youtube_comment_dict(top_level, parent=None)
         if not top:
             continue
         top_id = top["id"]
@@ -822,21 +868,31 @@ def youtube_channel(channel_id):
     return result
 
 
-def youtube_channel_videos(channel_id, limit=24):
-    """List a YouTube channel's recent uploads as feed-ready item dicts."""
+def youtube_channel_videos(channel_id, limit=24, duration="any"):
+    """List a YouTube channel's recent uploads as feed-ready item dicts.
+
+    ``duration`` mirrors the Data API ``videoDuration`` filter ("any",
+    "short", "long", "medium") so a channel's Snips can be listed separately
+    from its regular uploads.
+    """
+    if duration not in ("any", "short", "long", "medium"):
+        duration = "any"
     if not validate_youtube_channel_id(channel_id) or not _api_key():
         return []
-    cache_key = ("chanvideos", channel_id, limit)
+    cache_key = ("chanvideos", channel_id, limit, duration)
     cached = _cache_get(cache_key)
     if cached is not None:
         return cached
-    data = _youtube_request("search", {
+    params = {
         "part": "snippet",
         "channelId": channel_id,
         "type": "video",
         "order": "date",
         "maxResults": min(limit + 4, 50),
-    })
+    }
+    if duration != "any":
+        params["videoDuration"] = duration
+    data = _youtube_request("search", params)
     items = []
     for raw in (data or {}).get("items") or []:
         item = youtube_feed_item(raw)

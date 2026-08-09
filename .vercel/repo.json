@@ -1,0 +1,11 @@
+{
+  "remoteName": "origin",
+  "projects": [
+    {
+      "id": "prj_TGm1RDuNgrxNo7ar53Az54FZz2fC",
+      "name": "creektube-backend",
+      "directory": ".",
+      "orgId": "team_Oiw2lcRs1xtalsTTeGsMintW"
+    }
+  ]
+}

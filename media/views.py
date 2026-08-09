@@ -19,7 +19,8 @@ from .youtube import (normalize_youtube_url, get_video_metadata, youtube_thumbna
                       youtube_related_videos, youtube_search_channels,
                       youtube_duration_seconds, youtube_search_videos,
                       youtube_comments, youtube_like_counts_for, youtube_channel,
-                      youtube_channel_videos, validate_youtube_channel_id)
+                      youtube_channel_videos, validate_youtube_channel_id,
+                      build_youtube_snips_feed, youtube_embed_url)
 from .content import classify_content_type
 import logging
 from django.db.models.functions import TruncDate
@@ -187,6 +188,27 @@ def ensure_youtube_video(video_id, user=None):
     except Exception as exc:
         logger.warning("ensure_youtube_video failed for %s: %s", video_id, exc)
         return None
+
+
+def youtube_snip_like_state(request, video_id):
+    """Return ``(is_liked, like_count)`` for a live YouTube short.
+
+    CreekTube likes on YouTube Shorts are stored against the lightweight
+    YOUTUBE Video row (via the ``Like`` model) so they persist, while the
+    number shown mirrors the YouTube watch page: YouTube likes + CreekTube
+    likes.
+    """
+    user = request.user if getattr(request.user, "is_authenticated", False) else None
+    video = ensure_youtube_video(video_id, user)
+    if not video:
+        return False, 0
+    creek_like_count = Like.objects.filter(video=video).count()
+    yt_like_count = youtube_like_counts_for([video_id]).get(video_id, 0)
+    is_liked = (
+        user is not None
+        and Like.objects.filter(video=video, author=request.user).exists()
+    )
+    return is_liked, yt_like_count + creek_like_count
 
 
 # ---------------------------
@@ -903,8 +925,14 @@ class YouTubeChannel(APIView):
         channel = youtube_channel(channel_id)
         if not channel:
             return Response({'detail': 'Channel not found'}, status=status.HTTP_404_NOT_FOUND)
-        videos = youtube_channel_videos(channel_id, limit=24)
-        return Response({'channel': channel, 'videos': videos}, status=status.HTTP_200_OK)
+        content_type = (request.query_params.get('type') or 'videos').strip().lower()
+        duration = 'short' if content_type == 'snips' else 'any'
+        videos = youtube_channel_videos(channel_id, limit=24, duration=duration)
+        return Response({
+            'channel': channel,
+            'videos': videos,
+            'type': 'snips' if duration == 'short' else 'videos',
+        }, status=status.HTTP_200_OK)
 
 
 # ---------------------------
@@ -1870,15 +1898,42 @@ class SnipFeed(APIView):
         except (TypeError, ValueError):
             page_size = 12
 
-        approved_snips = Snip.objects.filter(is_approved=True, visibility="public", author__is_active=True).select_related("author")
-        total = approved_snips.count()
+        approved_snips = Snip.objects.filter(
+            is_approved=True, visibility="public", author__is_active=True
+        ).select_related("author").order_by("-timestamp")
+        native_total = approved_snips.count()
 
+        serializer = SnipSerializer(approved_snips, many=True, context={"request": request})
+        native_items = list(serializer.data)
+
+        youtube_items = build_youtube_snips_feed(request.user, limit=40)
+        youtube_total = len(youtube_items)
+
+        def _epoch(value):
+            if not value:
+                return 0.0
+            if isinstance(value, (int, float)):
+                return float(value)
+            try:
+                from datetime import datetime, timezone
+
+                parsed = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+                if parsed.tzinfo is None:
+                    parsed = parsed.replace(tzinfo=timezone.utc)
+                return parsed.timestamp()
+            except Exception:
+                return 0.0
+
+        combined = [(_epoch(item["timestamp"]), item) for item in native_items]
+        combined += [(_epoch(item["timestamp"]), item) for item in youtube_items]
+        combined.sort(key=lambda pair: pair[0], reverse=True)
+
+        total = native_total + youtube_total
         start = (page - 1) * page_size
-        snips = approved_snips[start : start + page_size]
+        results = [item for _, item in combined[start:start + page_size]]
 
-        serializer = SnipSerializer(snips, many=True, context={"request": request})
         return Response({
-            "results": serializer.data,
+            "results": results,
             "page": page,
             "page_size": page_size,
             "count": total,
@@ -1892,6 +1947,36 @@ class WatchSnip(APIView):
         snip_id = request.query_params.get("id")
         if not snip_id:
             return Response({"detail": "Snip ID required"}, status=400)
+
+        # A live YouTube Shorts ID (e.g. /snips/{yt_id}) is streamed straight
+        # from the Data API through the iframe embed, exactly like videos.
+        if validate_youtube_id(snip_id):
+            yt_item = get_youtube_video_details(snip_id)
+            if not yt_item:
+                return Response({"detail": "Snip not found"}, status=404)
+            is_liked, like_count = youtube_snip_like_state(request, snip_id)
+            return Response({
+                "id": yt_item.get("youtube_video_id") or snip_id,
+                "title": yt_item["title"],
+                "description": yt_item["description"],
+                "video": None,
+                "thumbnail": yt_item["thumbnail"],
+                "timestamp": yt_item["timestamp"],
+                "author": yt_item["author"],
+                "author_id": None,
+                "author_avatar": yt_item.get("author_avatar") or None,
+                "author_active": True,
+                "view_count": yt_item["view_count"],
+                "like_count": like_count,
+                "is_liked": is_liked,
+                "source_type": "YOUTUBE",
+                "content_type": yt_item.get("content_type") or "SNIP",
+                "duration": yt_item.get("duration") or 0,
+                "youtube_video_id": yt_item.get("youtube_video_id") or snip_id,
+                "youtube_channel_id": yt_item.get("youtube_channel_id") or "",
+                "youtube_channel_name": yt_item.get("youtube_channel_name") or "",
+                "embed_url": youtube_embed_url(snip_id),
+            }, status=200)
 
         try:
             snip = Snip.objects.filter(author__is_active=True).select_related("author").get(id=snip_id)
@@ -1925,6 +2010,28 @@ class LikeSnip(APIView):
         snip_id = request.data.get("id")
         if not snip_id:
             return Response({"detail": "Snip ID required"}, status=400)
+
+        # Likes on live YouTube Shorts are stored against the lightweight
+        # YOUTUBE Video row so they persist; the count mirrors the YouTube
+        # watch page (YouTube likes + CreekTube likes).
+        if validate_youtube_id(snip_id):
+            video = ensure_youtube_video(snip_id, request.user)
+            if not video:
+                return Response({"detail": "Snip not found"}, status=404)
+            like, created = Like.objects.get_or_create(video=video, author=request.user)
+            creek_like_count = Like.objects.filter(video=video).count()
+            yt_like_count = youtube_like_counts_for([snip_id]).get(snip_id, 0)
+            if not created:
+                like.delete()
+                creek_like_count = Like.objects.filter(video=video).count()
+                return Response({
+                    "is_liked": False,
+                    "like_count": max(yt_like_count + creek_like_count, 0),
+                }, status=200)
+            return Response({
+                "is_liked": True,
+                "like_count": yt_like_count + creek_like_count,
+            }, status=201)
 
         snip = get_object_or_404(Snip.objects.filter(author__is_active=True), id=snip_id)
         like, created = SnipLike.objects.get_or_create(author=request.user, snip=snip)
@@ -1967,6 +2074,10 @@ class SnipCommentList(APIView):
         if not snip_id:
             return Response({'detail': 'snip_id required'}, status=status.HTTP_400_BAD_REQUEST)
 
+        # Live YouTube Shorts surface their read-only YouTube comments.
+        if validate_youtube_id(snip_id):
+            return Response(youtube_comments(snip_id), status=status.HTTP_200_OK)
+
         snip = get_object_or_404(Snip.objects.filter(author__is_active=True), id=snip_id)
         top_level = Comment.objects.filter(snip=snip, parent=None, author__is_active=True).select_related('author').order_by('-is_pinned', '-timestamp')
         serializer = CommentSerializer(top_level, many=True, context={'request': request})
@@ -1985,6 +2096,13 @@ class UploadSnipComment(APIView):
 
         if not comment_text:
             return Response({'detail': 'No comment provided'}, status=status.HTTP_400_BAD_REQUEST)
+
+        # YouTube comments are read-only: the user comments on YouTube, not here.
+        if validate_youtube_id(snip_id):
+            return Response(
+                {'detail': 'YouTube comments are read-only'},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
 
         snip = get_object_or_404(Snip.objects.filter(author__is_active=True), id=snip_id)
 
@@ -2075,6 +2193,10 @@ class TrackSnipRetention(APIView):
             duration = max(0, min(int(duration), 86400))
         except (TypeError, ValueError):
             duration = 0
+
+        # Live YouTube Shorts aren't tracked in the retention tables.
+        if validate_youtube_id(snip_id):
+            return Response({"status": "ok"}, status=200)
 
         snip = get_object_or_404(Snip.objects.filter(author__is_active=True), id=snip_id)
         event = (

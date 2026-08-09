@@ -661,7 +661,54 @@ def fake_youtube_request(endpoint, params):
                     "channelTitle": "Fake Channel",
                     "publishedAt": "2024-01-01T00:00:00Z",
                 }
+            if "contentDetails" in part:
+                item["contentDetails"] = {"duration": "PT45S"}
             items.append(item)
+        return {"items": items}
+    if endpoint == "channels":
+        items = []
+        for cid in (params.get("id") or "").split(","):
+            if not cid:
+                continue
+            items.append({
+                "id": cid,
+                "snippet": {
+                    "title": "Fake Channel",
+                    "customUrl": "@fakechannel",
+                    "description": "A channel description",
+                    "publishedAt": "2020-01-01T00:00:00Z",
+                    "thumbnails": {
+                        "default": {"url": "https://example.com/avatar.jpg"},
+                        "medium": {"url": "https://example.com/avatar_m.jpg"},
+                        "high": {"url": "https://example.com/avatar_h.jpg"},
+                    },
+                },
+                "statistics": {"subscriberCount": "1000", "videoCount": "50", "viewCount": "9000"},
+                "brandingSettings": {"image": {"bannerImageUrl": "https://example.com/banner.jpg"}},
+            })
+        return {"items": items}
+    if endpoint == "commentThreads":
+        items = []
+        for idx in range(3):
+            items.append({
+                "id": f"yt_comment_{idx}",
+                "snippet": {
+                    "channelId": "UCfakechannel",
+                    "videoId": params.get("videoId", ""),
+                    "topLevelComment": {
+                        "id": f"yt_comment_{idx}",
+                        "snippet": {
+                            "textDisplay": f"YouTube comment {idx}",
+                            "authorDisplayName": "YT Commenter",
+                            "authorProfileImageUrl": "https://example.com/commenter.jpg",
+                            "authorChannelId": {"value": "UCfakechannel"},
+                            "publishedAt": "2024-01-01T00:00:00Z",
+                            "likeCount": "2",
+                            "isPinned": idx == 0,
+                        },
+                    },
+                },
+            })
         return {"items": items}
     return None
 
@@ -810,10 +857,15 @@ class LiveYouTubeWatchTests(LiveYouTubeMixin, TestCase):
         self.assertEqual(resp.status_code, 200)
         self.assertIs(resp.data["dispike"], False)
 
-    def test_comments_on_live_youtube_are_empty(self):
+    def test_comments_on_live_youtube_are_served(self):
+        self.mock_api()
         resp = self.client.get("/media/comment/?video_id=dQw4w9WgXcQ")
         self.assertEqual(resp.status_code, 200)
-        self.assertEqual(resp.data, [])
+        self.assertGreaterEqual(len(resp.data), 1)
+        first = resp.data[0]
+        self.assertEqual(first["source"], "youtube")
+        self.assertIs(first["read_only"], True)
+        self.assertEqual(first["text"], "YouTube comment 0")
 
     def test_comment_submit_on_live_youtube_is_saved(self):
         self.client.force_authenticate(user=self.user)
@@ -831,4 +883,92 @@ class LiveYouTubeWatchTests(LiveYouTubeMixin, TestCase):
         self.client.force_authenticate(user=self.user)
         resp = self.client.post("/media/trackretention/", {"video_id": "dQw4w9WgXcQ", "duration": 30})
         self.assertEqual(resp.status_code, 200)
+
+
+class LiveYouTubeSnipTests(LiveYouTubeMixin, TestCase):
+    """YouTube Shorts served through the /snips endpoints."""
+
+    def setUp(self):
+        self.client = APIClient()
+        self.user = User.objects.create_user(username="snip_yt", password="pw")
+        self.other = User.objects.create_user(username="snip_author", password="pw")
+
+    def test_watch_snip_serves_live_youtube_short(self):
+        self.mock_api()
+        resp = self.client.get("/media/snip/watch/?id=dQw4w9WgXcQ")
+        self.assertEqual(resp.status_code, 200)
+        self.assertEqual(resp.data["id"], "dQw4w9WgXcQ")
+        self.assertEqual(resp.data["source_type"], "YOUTUBE")
+        self.assertEqual(resp.data["youtube_video_id"], "dQw4w9WgXcQ")
+        self.assertEqual(resp.data["embed_url"], "https://www.youtube.com/embed/dQw4w9WgXcQ")
+        self.assertIsNone(resp.data["author_id"])
+        self.assertIn("i.ytimg.com", resp.data["thumbnail"])
+
+    def test_snip_feed_includes_youtube_shorts(self):
+        self.mock_api()
+        Snip.objects.create(
+            author=self.other, title="native_snip", description="",
+            video="native.mp4", thumbnail="", visibility="public",
+            is_approved=True,
+        )
+        resp = self.client.get("/media/snip/feed/")
+        self.assertEqual(resp.status_code, 200)
+        self.assertTrue(resp.data["count"] > 0)
+        yt_items = [item for item in resp.data["results"] if item.get("source_type") == "YOUTUBE"]
+        self.assertTrue(len(yt_items) > 0)
+        first = yt_items[0]
+        self.assertEqual(first["source_type"], "YOUTUBE")
+        self.assertIn(first["youtube_video_id"], VALID_YT_IDS)
+        self.assertEqual(first["embed_url"], f"https://www.youtube.com/embed/{first['youtube_video_id']}")
+
+    def test_snip_feed_without_api_key_is_native_only(self):
+        with mock.patch.object(youtube_module, "_api_key", return_value=""):
+            Snip.objects.create(
+                author=self.other, title="native_only", description="",
+                video="native.mp4", thumbnail="", visibility="public",
+                is_approved=True,
+            )
+            resp = self.client.get("/media/snip/feed/")
+        self.assertEqual(resp.status_code, 200)
+        for item in resp.data["results"]:
+            self.assertNotEqual(item.get("source_type"), "YOUTUBE")
+        self.assertIn("native_only", [item["title"] for item in resp.data["results"]])
+
+    def test_snip_comments_live_youtube_are_served(self):
+        self.mock_api()
+        resp = self.client.get("/media/snip/comments/?snip_id=dQw4w9WgXcQ")
+        self.assertEqual(resp.status_code, 200)
+        self.assertIsInstance(resp.data, list)
+
+    def test_snip_comment_submit_on_live_youtube_rejected(self):
+        self.mock_api()
+        self.client.force_authenticate(user=self.user)
+        resp = self.client.post("/media/snip/comment/", {"snip_id": "dQw4w9WgXcQ", "comment": "hi"})
+        self.assertEqual(resp.status_code, 400)
+
+    def test_like_on_live_youtube_short_is_saved(self):
+        self.mock_api()
+        self.client.force_authenticate(user=self.user)
+        resp = self.client.post("/media/snip/like/", {"id": "dQw4w9WgXcQ"})
+        self.assertEqual(resp.status_code, 201)
+        self.assertIs(resp.data["is_liked"], True)
+        # A stored row is materialized so the creek like persists.
+        self.assertTrue(Video.objects.filter(youtube_video_id="dQw4w9WgXcQ").exists())
+        resp = self.client.post("/media/snip/like/", {"id": "dQw4w9WgXcQ"})
+        self.assertEqual(resp.status_code, 200)
+        self.assertIs(resp.data["is_liked"], False)
+
+    def test_trackretention_on_live_youtube_short_is_ok(self):
+        self.client.force_authenticate(user=self.user)
+        resp = self.client.post("/media/snip/trackretention/", {"snip_id": "dQw4w9WgXcQ", "duration": 30})
+        self.assertEqual(resp.status_code, 200)
+
+    def test_channel_snips_type_uses_short_filter(self):
+        self.mock_api()
+        resp = self.client.get(
+            "/media/youtube/channel/",
+            {"channel_id": "UCabcdefghijklmnopqrstuv", "type": "snips"},
+        )
+        self.assertEqual(resp.status_code, 200)
+        self.assertEqual(resp.data["type"], "snips")
 
