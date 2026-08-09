@@ -2,6 +2,7 @@ from rest_framework import serializers
 from accounts.models import Profile
 import os
 from .models import *
+from .youtube import YOUTUBE_SYSTEM_USERNAME
 
 
 class MediaProfileSerializer(serializers.ModelSerializer):
@@ -208,7 +209,8 @@ class SnipSerializer(serializers.ModelSerializer):
 
 
 class VideoSerializer(serializers.ModelSerializer):
-    author = serializers.CharField(source="author.username", read_only=True)
+    id = serializers.SerializerMethodField()
+    author = serializers.SerializerMethodField()
     author_avatar = serializers.SerializerMethodField()
     author_active = serializers.SerializerMethodField()
     thumbnail = serializers.SerializerMethodField()
@@ -237,6 +239,28 @@ class VideoSerializer(serializers.ModelSerializer):
 
     def get_author_active(self, obj):
         return obj.author.is_active
+
+    def get_id(self, obj):
+        # Auto-materialized YouTube rows (owned by the reserved system account)
+        # are addressed by their YouTube ID so every link behaves exactly like
+        # the live feed item. Creator-added YouTube videos keep their real id.
+        if (
+            obj.source_type == "YOUTUBE"
+            and obj.youtube_video_id
+            and obj.author.username == YOUTUBE_SYSTEM_USERNAME
+        ):
+            return obj.youtube_video_id
+        return obj.pk
+
+    def get_author(self, obj):
+        # Materialized YouTube rows are owned by the system account for
+        # bookkeeping; show the real YouTube channel name instead.
+        if (
+            obj.source_type == "YOUTUBE"
+            and obj.author.username == YOUTUBE_SYSTEM_USERNAME
+        ):
+            return obj.youtube_channel_name or "YouTube"
+        return obj.author.username
 
     def get_category_name(self, obj):
         if obj.category:

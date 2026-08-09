@@ -11,7 +11,9 @@ from .models import (CategoryVideo, Comment, Creek, DisPike, Like, MediaProfile,
                      Snip, Video, WatchEvent, UploadRateLimit)
 from . import youtube as youtube_module
 from .youtube import (normalize_youtube_url, validate_youtube_id,
-                      youtube_embed_url, youtube_thumbnail_url, get_video_metadata)
+                      youtube_embed_url, youtube_thumbnail_url, get_video_metadata,
+                      YOUTUBE_SYSTEM_USERNAME)
+from .Serializers import VideoSerializer
 
 
 def make_video(author, category, hours_old=0, is_approved=True, title="video"):
@@ -994,6 +996,44 @@ class LiveYouTubeSnipTests(LiveYouTubeMixin, TestCase):
         resp = self.client.post("/media/snip/like/", {"id": "dQw4w9WgXcQ"})
         self.assertEqual(resp.status_code, 200)
         self.assertIs(resp.data["is_liked"], False)
+
+    def test_like_does_not_reassign_author_or_date(self):
+        """Liking a YouTube short must not claim it or reset its publish date."""
+        self.mock_api()
+        self.client.force_authenticate(user=self.user)
+        self.client.post("/media/snip/like/", {"id": "dQw4w9WgXcQ"})
+
+        row = Video.objects.get(youtube_video_id="dQw4w9WgXcQ")
+        # The row is owned by the reserved system account, never the liker.
+        self.assertEqual(row.author.username, YOUTUBE_SYSTEM_USERNAME)
+        # The real publish date is preserved, not reset to "now".
+        self.assertEqual(row.timestamp.date().isoformat(), "2024-01-01")
+
+        # The serialized row shows the real channel as author and is addressed
+        # by its YouTube ID so links keep working exactly like live items.
+        serialized = VideoSerializer(row, context={"request": None}).data
+        self.assertEqual(serialized["author"], "Fake Channel")
+        self.assertEqual(serialized["id"], "dQw4w9WgXcQ")
+        self.assertEqual(serialized["timestamp"][:10], "2024-01-01")
+
+    def test_liked_youtube_video_is_not_duplicated_on_homepage(self):
+        self.mock_api()
+        self.client.force_authenticate(user=self.user)
+        self.client.post("/media/pikevideo/", {"id": "aaaaaaaaaaa"})
+
+        home = self.client.get("/media/logingetvideo/")
+        self.assertEqual(home.status_code, 200)
+        results = home.data["results"]
+        # The materialized row must not appear as a native duplicate.
+        self.assertEqual(
+            [v for v in results if v.get("author") == self.user.username],
+            [],
+        )
+        # The video is only present through its live feed item, with the real
+        # channel name.
+        live = [v for v in results if v.get("youtube_video_id") == "aaaaaaaaaaa"]
+        self.assertEqual(len(live), 1)
+        self.assertEqual(live[0]["author"], "Fake Channel")
 
     def test_trackretention_on_live_youtube_short_is_ok(self):
         self.client.force_authenticate(user=self.user)

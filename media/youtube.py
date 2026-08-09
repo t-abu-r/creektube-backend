@@ -601,6 +601,26 @@ def build_youtube_snips_feed(user=None, interest_categories=None, limit=FEED_TOT
     return items
 
 
+def youtube_system_user():
+    """Return the reserved active account that owns materialized YouTube rows.
+
+    YouTube videos/shorts that are stored as lightweight CreekTube rows (so
+    likes/comments persist) are owned by this system account, never by the
+    user who happened to like them. The author shown to viewers comes from the
+    real YouTube channel metadata instead.
+    """
+    from django.contrib.auth.models import User
+
+    user, _ = User.objects.get_or_create(
+        username=YOUTUBE_SYSTEM_USERNAME,
+        defaults={"is_active": True},
+    )
+    return user
+
+
+YOUTUBE_SYSTEM_USERNAME = "youtube_system"
+
+
 def get_youtube_video_details(video_id):
     """Fetch one video's snippet + statistics + contentDetails.
 

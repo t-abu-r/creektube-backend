@@ -20,7 +20,8 @@ from .youtube import (normalize_youtube_url, get_video_metadata, youtube_thumbna
                       youtube_duration_seconds, youtube_search_videos,
                       youtube_comments, youtube_like_counts_for, youtube_channel,
                       youtube_channel_videos, validate_youtube_channel_id,
-                      build_youtube_snips_feed, youtube_embed_url)
+                      build_youtube_snips_feed, youtube_embed_url, youtube_system_user,
+                      YOUTUBE_SYSTEM_USERNAME)
 from .content import classify_content_type
 import logging
 from django.db.models.functions import TruncDate
@@ -167,9 +168,15 @@ def ensure_youtube_video(video_id, user=None):
             metadata["category"],
             metadata.get("category_name") or "",
         )
+    published = _epoch(details.get("timestamp")) or None
+    if published:
+        from datetime import datetime, timezone as dt_timezone
+        timestamp = datetime.fromtimestamp(published, tz=dt_timezone.utc)
+    else:
+        timestamp = timezone.now()
     try:
         return Video.objects.create(
-            author=user or (Video.objects.first().author if Video.objects.exists() else None),
+            author=youtube_system_user(),
             category=category,
             title=metadata.get("title") or details.get("title") or "YouTube video",
             description=metadata.get("description") or "",
@@ -180,7 +187,7 @@ def ensure_youtube_video(video_id, user=None):
             youtube_channel_id=metadata.get("channel_id") or details.get("youtube_channel_id") or "",
             youtube_channel_name=metadata.get("channel_name") or details.get("author") or "",
             visibility="public",
-            timestamp=timezone.now(),
+            timestamp=timestamp,
             is_approved=True,
             duration=details.get("duration") or 0,
             content_type=classify_content_type(details.get("duration") or 0),
@@ -422,6 +429,9 @@ class LoginGetVideo(APIView):
 
         approved_videos = (
             Video.objects.filter(is_approved=True, visibility="public", author__is_active=True)
+            # Materialized YouTube rows are bookkeeping for likes/comments; the
+            # live YouTube items already carry that content into the feed.
+            .exclude(source_type="YOUTUBE", author__username=YOUTUBE_SYSTEM_USERNAME)
             .select_related('category')
             .annotate(
                 num_likes=Count('likes', distinct=True),
@@ -560,6 +570,7 @@ class GuestGetVideo(APIView):
 
         approved_videos = (
             Video.objects.filter(is_approved=True, visibility="public", author__is_active=True)
+            .exclude(source_type="YOUTUBE", author__username=YOUTUBE_SYSTEM_USERNAME)
             .select_related('category')
             .annotate(
                 num_likes=Count('likes', distinct=True),

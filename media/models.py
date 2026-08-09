@@ -1,5 +1,6 @@
 from django.db import models
 from django.contrib.auth.models import User
+from django.utils import timezone
 from cloudinary.models import CloudinaryField
 
 
@@ -80,7 +81,7 @@ class Video(models.Model):
     video_public_id = models.CharField(max_length=255, blank=True, default="")
     thumbnail_public_id = models.CharField(max_length=255, blank=True, default="")
     visibility = models.CharField(max_length=10, choices=VISIBILITY_CHOICES, default="public")
-    timestamp = models.DateTimeField(auto_now_add=True)
+    timestamp = models.DateTimeField(default=timezone.now)
     is_approved = models.BooleanField(default=False)
     view_count = models.PositiveIntegerField(default=0)
 
