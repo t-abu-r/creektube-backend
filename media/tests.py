@@ -1,4 +1,5 @@
 from datetime import timedelta
+from unittest import mock
 
 from django.contrib.auth.models import User
 from django.test import TestCase
@@ -8,6 +9,7 @@ from rest_framework.test import APIClient
 from . import ranking
 from .models import (CategoryVideo, Creek, DisPike, Like, MediaProfile,
                      Snip, Video, WatchEvent, UploadRateLimit)
+from . import youtube as youtube_module
 from .youtube import (normalize_youtube_url, validate_youtube_id,
                       youtube_embed_url, youtube_thumbnail_url, get_video_metadata)
 
@@ -617,4 +619,197 @@ class UnifiedFeedTests(TestCase):
         yt_items = [v for v in resp.data["videos"] if v["source_type"] == "YOUTUBE"]
         self.assertEqual(len(yt_items), 1)
         self.assertEqual(yt_items[0]["youtube_video_id"], "dQw4w9WgXcQ")
+
+
+# ---------------------------------------------------------------------------
+# Live YouTube mixing (the Data API, not stored rows)
+# ---------------------------------------------------------------------------
+VALID_YT_IDS = ["dQw4w9WgXcQ", "aaaaaaaaaaa", "bbbbbbbbbbb", "ccccccccccc"]
+
+
+def fake_youtube_request(endpoint, params):
+    """Canned YouTube Data API response for tests."""
+    if endpoint == "search":
+        query = (params.get("q") or "default").strip()
+        items = []
+        for idx, vid in enumerate(VALID_YT_IDS):
+            items.append({
+                "id": {"videoId": vid},
+                "snippet": {
+                    "title": f"{query} result {idx}",
+                    "description": "A description",
+                    "channelId": "UCfakechannel",
+                    "channelTitle": "Fake Channel",
+                    "publishedAt": "2024-01-01T00:00:00Z",
+                },
+            })
+        return {"items": items}
+    if endpoint == "videos":
+        part = params.get("part", "")
+        items = []
+        for vid in (params.get("id") or "").split(","):
+            if not vid:
+                continue
+            item = {"id": vid}
+            if "statistics" in part:
+                item["statistics"] = {"viewCount": "12345"}
+            if "snippet" in part:
+                item["snippet"] = {
+                    "title": "Video Details Title",
+                    "description": "Details description",
+                    "channelId": "UCfakechannel",
+                    "channelTitle": "Fake Channel",
+                    "publishedAt": "2024-01-01T00:00:00Z",
+                }
+            items.append(item)
+        return {"items": items}
+    return None
+
+
+class LiveYouTubeMixin:
+    def mock_api(self):
+        youtube_module._cache.clear()
+        patcher_key = mock.patch.object(youtube_module, "_api_key", return_value="test-key")
+        patcher_req = mock.patch.object(youtube_module, "_youtube_request", side_effect=fake_youtube_request)
+        patcher_key.start()
+        patcher_req.start()
+        self.addCleanup(patcher_key.stop)
+        self.addCleanup(patcher_req.stop)
+
+
+class LiveYouTubeFeedTests(LiveYouTubeMixin, TestCase):
+    def setUp(self):
+        self.client = APIClient()
+        self.user = User.objects.create_user(username="hybrid_interest", password="pw")
+        self.other = User.objects.create_user(username="hybrid_author", password="pw")
+        self.gaming = CategoryVideo.objects.create(name="Gaming", slug="gaming")
+        self.music = CategoryVideo.objects.create(name="Music", slug="music")
+
+    def test_guest_feed_mixes_live_youtube_items(self):
+        self.mock_api()
+        make_video(self.other, self.gaming, hours_old=1, title="native_one")
+        resp = self.client.get("/media/guestgetvideo/")
+        self.assertEqual(resp.status_code, 200)
+        yt_items = [v for v in resp.data["results"] if v["source_type"] == "YOUTUBE"]
+        self.assertTrue(len(yt_items) > 0)
+        first = yt_items[0]
+        self.assertEqual(first["source_type"], "YOUTUBE")
+        self.assertIn(first["youtube_video_id"], VALID_YT_IDS)
+        self.assertEqual(first["embed_url"], f"https://www.youtube.com/embed/{first['youtube_video_id']}")
+        self.assertIn("i.ytimg.com", first["thumbnail"])
+        self.assertIsNone(first["author_id"])
+        self.assertEqual(first["view_count"], 12345)
+
+    def test_logged_in_feed_mixes_and_interleaves(self):
+        self.mock_api()
+        self.client.force_authenticate(user=self.user)
+        native = make_video(self.other, self.gaming, hours_old=1, title="native_primary")
+        resp = self.client.get("/media/logingetvideo/")
+        self.assertEqual(resp.status_code, 200)
+        results = resp.data["results"]
+        titles = [v["title"] for v in results]
+        self.assertIn("native_primary", titles)
+        yt_items = [v for v in results if v["source_type"] == "YOUTUBE"]
+        self.assertTrue(len(yt_items) > 0)
+        # YouTube items never repeat a native video's id or title.
+        self.assertNotIn(native.id, [v["id"] for v in yt_items])
+
+    def test_logged_in_feed_builds_queries_from_interests(self):
+        self.mock_api()
+        profile, _ = MediaProfile.objects.get_or_create(user=self.user)
+        profile.categories = {"gaming": 9, "music": 3}
+        profile.save()
+        queries = []
+
+        def spy_request(endpoint, params):
+            if endpoint == "search":
+                queries.append(params.get("q"))
+            return fake_youtube_request(endpoint, params)
+
+        with mock.patch.object(youtube_module, "_youtube_request", side_effect=spy_request):
+            self.client.force_authenticate(user=self.user)
+            self.client.get("/media/logingetvideo/")
+        self.assertTrue(any("gaming" in q for q in queries))
+
+    def test_feed_without_api_key_is_native_only(self):
+        with mock.patch.object(youtube_module, "_api_key", return_value=""):
+            make_video(self.other, self.gaming, hours_old=1, title="only_native")
+            resp = self.client.get("/media/guestgetvideo/")
+        self.assertEqual(resp.status_code, 200)
+        for v in resp.data["results"]:
+            self.assertNotEqual(v["source_type"], "YOUTUBE")
+        self.assertIn("only_native", [v["title"] for v in resp.data["results"]])
+
+    def test_quota_error_degrades_to_native_feed(self):
+        def boom(*args, **kwargs):
+            raise Exception("quota exceeded")
+
+        with mock.patch.object(youtube_module, "_api_key", return_value="test-key"), \
+             mock.patch.object(youtube_module, "_youtube_request", side_effect=boom):
+            make_video(self.other, self.gaming, hours_old=1, title="native_survives")
+            resp = self.client.get("/media/guestgetvideo/")
+        self.assertEqual(resp.status_code, 200)
+        self.assertIn("native_survives", [v["title"] for v in resp.data["results"]])
+
+
+class LiveYouTubeWatchTests(LiveYouTubeMixin, TestCase):
+    def setUp(self):
+        self.client = APIClient()
+        self.user = User.objects.create_user(username="watch_yt", password="pw")
+
+    def test_guestgetvideo_serves_live_youtube_id(self):
+        self.mock_api()
+        resp = self.client.get("/media/guestgetvideo/?video_id=dQw4w9WgXcQ")
+        self.assertEqual(resp.status_code, 200)
+        self.assertEqual(resp.data["source_type"], "YOUTUBE")
+        self.assertEqual(resp.data["youtube_video_id"], "dQw4w9WgXcQ")
+        self.assertEqual(resp.data["embed_url"], "https://www.youtube.com/embed/dQw4w9WgXcQ")
+
+    def test_guestwatch_serves_live_youtube_video(self):
+        self.mock_api()
+        resp = self.client.post("/media/guestwatchvideo/", {"video_id": "dQw4w9WgXcQ"})
+        self.assertEqual(resp.status_code, 200)
+        self.assertEqual(resp.data["video"]["source_type"], "YOUTUBE")
+        self.assertEqual(resp.data["like_count"], 0)
+        self.assertIs(resp.data["like"], False)
+        self.assertGreaterEqual(len(resp.data["related_videos"]), 1)
+        self.assertEqual(resp.data["related_videos"][0]["source_type"], "YOUTUBE")
+
+    def test_loginwatch_serves_live_youtube_video(self):
+        self.mock_api()
+        self.client.force_authenticate(user=self.user)
+        resp = self.client.post("/media/watchvideo/", {"video_id": "aaaaaaaaaaa"})
+        self.assertEqual(resp.status_code, 200)
+        self.assertEqual(resp.data["video"]["source_type"], "YOUTUBE")
+        self.assertEqual(resp.data["video"]["youtube_video_id"], "aaaaaaaaaaa")
+        self.assertEqual(resp.data["creek_count"], 0)
+
+    def test_watch_unknown_id_returns_404(self):
+        with mock.patch.object(youtube_module, "_api_key", return_value=""):
+            resp = self.client.post("/media/guestwatchvideo/", {"video_id": "not-a-video-id"})
+        self.assertEqual(resp.status_code, 404)
+
+    def test_like_on_live_youtube_is_graceful(self):
+        self.client.force_authenticate(user=self.user)
+        resp = self.client.post("/media/pikevideo/", {"id": "dQw4w9WgXcQ"})
+        self.assertEqual(resp.status_code, 200)
+        self.assertIs(resp.data["liked"], False)
+        resp = self.client.post("/media/dispikevideo/", {"id": "dQw4w9WgXcQ"})
+        self.assertEqual(resp.status_code, 200)
+        self.assertIs(resp.data["dispike"], False)
+
+    def test_comments_on_live_youtube_are_empty(self):
+        resp = self.client.get("/media/comment/?video_id=dQw4w9WgXcQ")
+        self.assertEqual(resp.status_code, 200)
+        self.assertEqual(resp.data, [])
+
+    def test_comment_submit_on_live_youtube_rejected(self):
+        self.client.force_authenticate(user=self.user)
+        resp = self.client.post("/media/uploadcommentvideo/", {"video_id": "dQw4w9WgXcQ", "comment": "hi"})
+        self.assertEqual(resp.status_code, 400)
+
+    def test_trackretention_on_live_youtube_is_ok(self):
+        self.client.force_authenticate(user=self.user)
+        resp = self.client.post("/media/trackretention/", {"video_id": "dQw4w9WgXcQ", "duration": 30})
+        self.assertEqual(resp.status_code, 200)
 
