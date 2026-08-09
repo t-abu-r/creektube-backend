@@ -142,6 +142,9 @@ class SnipSerializer(serializers.ModelSerializer):
     video = serializers.SerializerMethodField()
     thumbnail = serializers.SerializerMethodField()
     is_liked = serializers.SerializerMethodField()
+    source_type = serializers.SerializerMethodField()
+    content_type = serializers.SerializerMethodField()
+    duration = serializers.IntegerField(read_only=True)
 
     class Meta:
         model = Snip
@@ -149,6 +152,7 @@ class SnipSerializer(serializers.ModelSerializer):
             "id", "title", "description", "video", "thumbnail", "visibility", "timestamp",
             "is_approved", "author", "author_id", "author_avatar", "author_active",
             "view_count", "like_count", "is_liked",
+            "source_type", "content_type", "duration",
         ]
 
     def get_author_active(self, obj):
@@ -188,6 +192,12 @@ class SnipSerializer(serializers.ModelSerializer):
             return obj.likes.filter(author=request.user).exists()
         return False
 
+    def get_source_type(self, obj):
+        return "CREEKTUBE"
+
+    def get_content_type(self, obj):
+        return "SNIP"
+
 
 class VideoSerializer(serializers.ModelSerializer):
     author = serializers.CharField(source="author.username", read_only=True)
@@ -205,6 +215,8 @@ class VideoSerializer(serializers.ModelSerializer):
     youtube_channel_id = serializers.CharField(read_only=True)
     youtube_channel_name = serializers.CharField(read_only=True)
     embed_url = serializers.SerializerMethodField()
+    content_type = serializers.CharField(read_only=True)
+    duration = serializers.IntegerField(read_only=True)
 
     class Meta:
         model = Video
@@ -212,7 +224,7 @@ class VideoSerializer(serializers.ModelSerializer):
             "id", "category", "category_name", "title", "description", "thumbnail", "video", "visibility",
             "timestamp", "is_approved", "author", "author_id", "author_avatar", "author_active",
             "comments", "view_count", "source_type", "youtube_video_id", "youtube_channel_id",
-            "youtube_channel_name", "embed_url",
+            "youtube_channel_name", "embed_url", "content_type", "duration",
         ]
 
     def get_author_active(self, obj):

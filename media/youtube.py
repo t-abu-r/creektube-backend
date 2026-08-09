@@ -18,6 +18,8 @@ import requests
 
 from django.utils import timezone
 
+from .content import classify_content_type, SNIP, VIDEO
+
 logger = logging.getLogger(__name__)
 
 # YouTube video IDs are 11 characters from [A-Za-z0-9_-].
@@ -26,6 +28,47 @@ WATCH_URL_RE = re.compile(r"youtube\.com/watch[^#]*\b[?&]v=([A-Za-z0-9_-]{11})")
 SHORTS_URL_RE = re.compile(r"youtube\.com/shorts/([A-Za-z0-9_-]{11})")
 EMBED_URL_RE = re.compile(r"youtube\.com/embed/([A-Za-z0-9_-]{11})")
 YOUDOTBE_URL_RE = re.compile(r"youtu\.be/([A-Za-z0-9_-]{11})")
+
+# YouTube Data API video category IDs mapped to CreekTube category slugs.
+# When a user watches a YouTube video, its category feeds the same interest
+# scoring that drives the CreekTube home feed, so unknown IDs fall back to a
+# sensible generic category instead of silently dropping the signal.
+YOUTUBE_CATEGORY_MAP = {
+    "1": {"slug": "film-animation", "name": "Film & Animation"},
+    "2": {"slug": "autos-vehicles", "name": "Autos & Vehicles"},
+    "10": {"slug": "music", "name": "Music"},
+    "15": {"slug": "pets-animals", "name": "Pets & Animals"},
+    "17": {"slug": "sports", "name": "Sports"},
+    "19": {"slug": "travel-events", "name": "Travel & Events"},
+    "20": {"slug": "gaming", "name": "Gaming"},
+    "21": {"slug": "vlogs", "name": "Vlogs"},
+    "22": {"slug": "vlogs", "name": "People & Blogs"},
+    "23": {"slug": "comedy", "name": "Comedy"},
+    "24": {"slug": "entertainment", "name": "Entertainment"},
+    "25": {"slug": "news", "name": "News & Politics"},
+    "26": {"slug": "howto", "name": "Howto & Style"},
+    "27": {"slug": "education", "name": "Education"},
+    "28": {"slug": "science-tech", "name": "Science & Technology"},
+    "29": {"slug": "nonprofits", "name": "Nonprofits & Activism"},
+    "30": {"slug": "movies", "name": "Movies"},
+    "31": {"slug": "animation", "name": "Animation"},
+    "41": {"slug": "shortform-videos", "name": "Shorts"},
+}
+
+# Generic fallback so every YouTube video maps to *some* CreekTube category.
+YOUTUBE_CATEGORY_FALLBACK = {"slug": "entertainment", "name": "Entertainment"}
+
+
+def youtube_category_for(category_id):
+    """Map a YouTube ``categoryId`` to a CreekTube ``{slug, name}`` dict.
+
+    Unknown/missing IDs fall back to the generic entertainment category so a
+    watch always produces a usable interest signal. Never raises.
+    """
+    try:
+        return dict(YOUTUBE_CATEGORY_MAP.get(str(category_id or "").strip(), YOUTUBE_CATEGORY_FALLBACK))
+    except Exception:
+        return dict(YOUTUBE_CATEGORY_FALLBACK)
 
 URL_PATTERNS = (WATCH_URL_RE, SHORTS_URL_RE, EMBED_URL_RE, YOUDOTBE_URL_RE)
 
@@ -66,6 +109,33 @@ def youtube_embed_url(video_id):
     if not validate_youtube_id(video_id):
         return ""
     return f"https://www.youtube.com/embed/{video_id}"
+
+
+def youtube_duration_seconds(iso8601_duration):
+    """Convert a YouTube ``contentDetails.duration`` (ISO 8601) to seconds.
+
+    Supports ``PT#H#M#S``-style durations including decimal seconds, plus a
+    plain ``None``/empty fallback of 0 (unknown). Never raises.
+    """
+    if not iso8601_duration:
+        return 0
+    match = re.fullmatch(
+        r"P(?:(\d+(?:\.\d+)?)D)?(?:T(?:(\d+(?:\.\d+)?)H)?(?:(\d+(?:\.\d+)?)M)?(?:(\d+(?:\.\d+)?)S)?)?",
+        str(iso8601_duration).strip(),
+    )
+    if not match:
+        return 0
+    days, hours, minutes, seconds = match.groups()
+    total = 0.0
+    if days:
+        total += float(days) * 86400
+    if hours:
+        total += float(hours) * 3600
+    if minutes:
+        total += float(minutes) * 60
+    if seconds:
+        total += float(seconds)
+    return int(round(total))
 
 
 # ---------------------------------------------------------------------------
@@ -137,12 +207,12 @@ def _category_to_query(category_slug):
     return category_slug.replace("-", " ").strip()
 
 
-def _feed_queries_for(user, interest_categories=None, feed="following"):
+def _feed_queries_for(user, interest_categories=None, feed="following", history_keywords=None):
     """Build the list of YouTube search queries for a feed request.
 
     Logged-in users get queries from their strongest interests (category
-    slugs the profile has actually engaged with). Everyone else gets the
-    default topic pool.
+    slugs the profile has actually engaged with). Recent ``history_keywords``
+    are folded in for discovery. Everyone else gets the default topic pool.
     """
     queries = []
     if interest_categories:
@@ -152,6 +222,10 @@ def _feed_queries_for(user, interest_categories=None, feed="following"):
             reverse=True,
         )
         queries = [_category_to_query(slug) for slug, _ in ranked_cats[:4]]
+    for keyword in (history_keywords or [])[:3]:
+        keyword = (keyword or "").strip()
+        if keyword and keyword not in queries:
+            queries.append(keyword)
     if feed == "following":
         # Follow feeds still benefit from a little discovery outside the pool.
         queries = (queries or []) + ["popular right now"]
@@ -179,6 +253,96 @@ def youtube_search_results(query, max_results=FEED_MAX_RESULTS_PER_QUERY):
     return items
 
 
+def youtube_search_videos(query, limit=10):
+    """Search YouTube videos and return feed-ready dicts (with stats+durations).
+
+    Used by the search endpoint so YouTube results render exactly like native
+    feed items. Returns an empty list when the key is missing or calls fail.
+    """
+    items = []
+    seen = set()
+    for raw in youtube_search_results(query, max_results=limit + 2):
+        item = youtube_feed_item(raw)
+        if not item or item["id"] in seen:
+            continue
+        seen.add(item["id"])
+        items.append(item)
+        if len(items) >= limit:
+            break
+    if items:
+        ids = [item["id"] for item in items]
+        counts = _view_counts_for(ids)
+        durations = _durations_for(ids)
+        for item in items:
+            item["view_count"] = counts.get(item["id"], 0)
+            item["duration"] = durations.get(item["id"], 0)
+            item["content_type"] = classify_content_type(item["duration"])
+    return items
+
+
+YOUTUBE_CHANNEL_ID_RE = re.compile(r"UC[A-Za-z0-9_-]{22}")
+
+
+def validate_youtube_channel_id(value):
+    """Return True if ``value`` is a plausible 22-character channel ID."""
+    return bool(value) and bool(YOUTUBE_CHANNEL_ID_RE.fullmatch(value))
+
+
+def _channel_item(raw):
+    """Shape a raw YouTube channel search item into a channel dict."""
+    snippet = raw.get("snippet") or {}
+    channel_id = (snippet.get("channelId") or "").strip()
+    if not validate_youtube_channel_id(channel_id):
+        return None
+    thumbnails = snippet.get("thumbnails") or {}
+    thumbnail = (thumbnails.get("default") or {}).get("url") or ""
+    subscribers = None
+    try:
+        stats = raw.get("statistics") or {}
+        if stats.get("subscriberCount"):
+            subscribers = int(stats["subscriberCount"])
+    except (TypeError, ValueError):
+        subscribers = None
+    return {
+        "channel_id": channel_id,
+        "channel_name": (snippet.get("title") or "YouTube channel").strip(),
+        "channel_handle": (snippet.get("customUrl") or "").strip().lstrip("@"),
+        "channel_thumbnail": thumbnail,
+        "channel_description": (snippet.get("description") or "").strip(),
+        "subscriber_count": subscribers,
+        "video_count": None,
+    }
+
+
+def youtube_search_channels(query, limit=12):
+    """Search YouTube channels by name/handle (cached, never raises)."""
+    query = (query or "").strip()
+    if not query or not _api_key():
+        return []
+    cache_key = ("channels", query, limit)
+    cached = _cache_get(cache_key)
+    if cached is not None:
+        return cached
+    data = _youtube_request("search", {
+        "part": "snippet",
+        "type": "channel",
+        "q": query,
+        "maxResults": limit,
+        "safeSearch": "moderate",
+    })
+    items = (data or {}).get("items") or []
+    result = []
+    for raw in items:
+        item = _channel_item(raw)
+        if item:
+            result.append(item)
+        if len(result) >= limit:
+            break
+    if result:
+        _cache_set(cache_key, result)
+    return result
+
+
 def _view_counts_for(video_ids):
     """Fetch view counts for up to 50 video IDs in a single API call."""
     video_ids = [vid for vid in video_ids if validate_youtube_id(vid)]
@@ -204,12 +368,38 @@ def _view_counts_for(video_ids):
     return counts
 
 
-def youtube_feed_item(item, category_slug="", category_name="", view_count=None):
+def _durations_for(video_ids):
+    """Fetch duration seconds for up to 50 video IDs in a single call.
+
+    Returns ``{video_id: seconds}``. Unknown/missing durations default to 0
+    so ``classify_content_type`` treats them as plain videos (never snips).
+    """
+    video_ids = [vid for vid in video_ids if validate_youtube_id(vid)]
+    if not video_ids or not _api_key():
+        return {}
+    cache_key = ("durations", ",".join(sorted(video_ids)))
+    cached = _cache_get(cache_key)
+    if cached is not None:
+        return cached
+    data = _youtube_request("videos", {
+        "part": "contentDetails",
+        "id": ",".join(video_ids[:50]),
+    })
+    durations = {}
+    for item in (data or {}).get("items") or []:
+        details = item.get("contentDetails") or {}
+        durations[item["id"]] = youtube_duration_seconds(details.get("duration"))
+    _cache_set(cache_key, durations)
+    return durations
+
+
+def youtube_feed_item(item, category_slug="", category_name="", view_count=None, duration=None):
     """Shape a raw YouTube search API item into a feed-ready video dict.
 
     The shape mirrors what ``VideoSerializer`` already returns so the
     frontend (VideoCard + WatchVideo) can render YouTube and CreekTube
-    content uniformly.
+    content uniformly. ``duration`` (seconds) is set when known; otherwise
+    the item is left as a plain VIDEO.
     """
     raw_id = item.get("id")
     if isinstance(raw_id, dict):
@@ -237,6 +427,8 @@ def youtube_feed_item(item, category_slug="", category_name="", view_count=None)
         "comments": [],
         "view_count": view_count or 0,
         "source_type": "YOUTUBE",
+        "content_type": classify_content_type(duration),
+        "duration": duration or 0,
         "youtube_video_id": video_id,
         "youtube_channel_id": (snippet.get("channelId") or "").strip(),
         "youtube_channel_name": (snippet.get("channelTitle") or "").strip(),
@@ -244,17 +436,19 @@ def youtube_feed_item(item, category_slug="", category_name="", view_count=None)
     }
 
 
-def build_youtube_feed(user=None, interest_categories=None, limit=FEED_TOTAL_ITEMS, feed=None):
+def build_youtube_feed(user=None, interest_categories=None, limit=FEED_TOTAL_ITEMS, feed=None, history_keywords=None):
     """Build a list of live YouTube feed items.
 
     ``user`` may be None (guest). Interests come from the user's MediaProfile
-    categories (``{category_slug: score}``). Returns an empty list whenever the
-    API key is missing or the calls fail, so the native feed is never harmed.
+    categories (``{category_slug: score}``). ``history_keywords`` (a list of
+    recent search/history terms) are mixed in for discovery. Returns an empty
+    list whenever the API key is missing or the calls fail, so the native
+    feed is never harmed.
     """
     if not _api_key() or limit <= 0:
         return []
 
-    queries = _feed_queries_for(user, interest_categories, feed=feed)
+    queries = _feed_queries_for(user, interest_categories, feed=feed, history_keywords=history_keywords)
     items = []
     seen_ids = set()
     for query in queries:
@@ -270,16 +464,20 @@ def build_youtube_feed(user=None, interest_categories=None, limit=FEED_TOTAL_ITE
     items = items[:limit]
     if items:
         counts = _view_counts_for([item["id"] for item in items])
+        durations = _durations_for([item["id"] for item in items])
         for item in items:
             item["view_count"] = counts.get(item["id"], 0)
+            item["duration"] = durations.get(item["id"], 0)
+            item["content_type"] = classify_content_type(item["duration"])
     return items
 
 
 def get_youtube_video_details(video_id):
-    """Fetch one video's snippet + statistics and return a feed-ready dict.
+    """Fetch one video's snippet + statistics + contentDetails.
 
-    Used by the watch endpoints so a YouTube ID that isn't stored as a
-    CreekTube row can still be played through the iframe embed.
+    Returns a feed-ready dict (including ``duration`` and ``content_type``)
+    so a YouTube ID that isn't stored as a CreekTube row can still be played
+    through the iframe embed.
     """
     if not validate_youtube_id(video_id) or not _api_key():
         return None
@@ -287,27 +485,34 @@ def get_youtube_video_details(video_id):
     cached = _cache_get(cache_key)
     if cached is not None:
         return cached
-    data = _youtube_request("videos", {"part": "snippet,statistics", "id": video_id})
+    data = _youtube_request("videos", {"part": "snippet,statistics,contentDetails", "id": video_id})
     items = (data or {}).get("items") or []
     if not items:
         return None
     snippet = items[0].get("snippet") or {}
     stats = items[0].get("statistics") or {}
+    details = items[0].get("contentDetails") or {}
     try:
         view_count = int(stats.get("viewCount") or 0)
     except (TypeError, ValueError):
         view_count = 0
+    duration = youtube_duration_seconds(details.get("duration"))
+    category = youtube_category_for(snippet.get("categoryId"))
     item = {
         "id": video_id,
         "snippet": snippet,
     }
     shaped = youtube_feed_item(
         item,
-        category_slug="",
-        category_name="",
+        category_slug=category["slug"],
+        category_name=category["name"],
         view_count=view_count,
+        duration=duration,
     )
     if shaped:
+        shaped["content_type"] = classify_content_type(duration)
+        shaped["category"] = category["slug"]
+        shaped["category_name"] = category["name"]
         _cache_set(cache_key, shaped)
     return shaped
 
@@ -361,12 +566,16 @@ def get_video_metadata(video_id):
         if not items:
             return None
         snippet = items[0].get("snippet") or {}
+        category = youtube_category_for(snippet.get("categoryId"))
         return {
             "title": (snippet.get("title") or "").strip(),
             "description": (snippet.get("description") or "").strip(),
             "thumbnail": youtube_thumbnail_url(video_id),
             "channel_id": (snippet.get("channelId") or "").strip(),
             "channel_name": (snippet.get("channelTitle") or "").strip(),
+            "category_id": (snippet.get("categoryId") or "").strip(),
+            "category": category["slug"],
+            "category_name": category["name"],
         }
     except Exception as exc:
         logger.warning("YouTube metadata fetch failed for %s: %s", video_id, exc)

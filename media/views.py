@@ -16,7 +16,9 @@ from django.db.models import Count, Q, Sum, Avg, F, Max
 from . import ranking
 from .youtube import (normalize_youtube_url, get_video_metadata, youtube_thumbnail_url,
                       validate_youtube_id, build_youtube_feed, get_youtube_video_details,
-                      youtube_related_videos)
+                      youtube_related_videos, youtube_search_channels,
+                      youtube_duration_seconds, youtube_search_videos)
+from .content import classify_content_type
 import logging
 from django.db.models.functions import TruncDate
 logger = logging.getLogger(__name__)
@@ -100,6 +102,47 @@ def check_comment_spam(user, video):
     return recent < COMMENT_SPAM_LIMIT
 
 
+def ensure_category(slug, name=""):
+    """Return the CategoryVideo row for ``slug``, creating it if needed."""
+    if not slug:
+        return None
+    category, _ = CategoryVideo.objects.get_or_create(
+        slug=slug,
+        defaults={"name": name or slug.replace("-", " ").title()},
+    )
+    return category
+
+
+def record_category_interest(user, category_slug, boost=ranking.WATCH_BOOST):
+    """Boost a user's interest score for ``category_slug`` after a watch.
+
+    This is what makes the home feed adapt: ``profile.categories`` drives both
+    the native ranking and the YouTube query pool, so watching content in a
+    category surfaces more of that category on the homepage.
+    """
+    if not user or not user.is_authenticated or not category_slug:
+        return
+    profile, _ = MediaProfile.objects.get_or_create(user=user)
+    profile.categories = ranking.adjust_category_score(
+        profile.categories, category_slug, boost
+    )
+    profile.save()
+
+
+def boost_youtube_watch_interest(user, video):
+    """Learn the YouTube category for a stored but uncategorized YouTube row."""
+    if not video or video.source_type != "YOUTUBE" or not video.youtube_video_id:
+        return
+    yt_item = get_youtube_video_details(video.youtube_video_id) or {}
+    if not yt_item.get("category"):
+        return
+    category = ensure_category(yt_item["category"], yt_item.get("category_name") or "")
+    if category:
+        Video.objects.filter(pk=video.pk).update(category=category)
+        video.category = category
+        record_category_interest(user, category.slug)
+
+
 # ---------------------------
 # Hybrid feed mixing (CreekTube + YouTube)
 # ---------------------------
@@ -151,6 +194,37 @@ def serialize_mixed_items(items, request):
         serializer = VideoSerializer(objects, many=True, context={'request': request})
         object_data = {obj.id: data for obj, data in zip(objects, serializer.data)}
     return [object_data.get(item.id) if isinstance(item, Video) else item for item in items]
+
+
+def recent_watch_keywords(user, limit=3):
+    """Derive up to ``limit`` discovery keywords from a user's recent watches.
+
+    Words come from the titles of the most recent videos/snips the user
+    watched, so the live feed can mix in topics they actually engage with.
+    """
+    if not user or not user.is_authenticated:
+        return []
+    titles = []
+    events = (WatchEvent.objects.filter(user=user)
+              .select_related("video", "snip")
+              .order_by("-timestamp")[:12])
+    for event in events:
+        title = ""
+        if event.video:
+            title = event.video.title
+        elif event.snip:
+            title = event.snip.title
+        if title:
+            titles.append(title)
+    keywords = []
+    for title in titles:
+        for word in title.split():
+            cleaned = "".join(ch for ch in word.lower() if ch.isalnum())
+            if len(cleaned) >= 3 and cleaned not in keywords:
+                keywords.append(cleaned)
+        if len(keywords) >= limit:
+            break
+    return keywords[:limit]
 
 
 # ---------------------------
@@ -232,6 +306,8 @@ class LoginGetVideo(APIView):
                     "category_name": "Shortform Videos",
                     "view_count": s.view_count,
                     "is_snip": True,
+                    "content_type": "SNIP",
+                    "duration": s.duration,
                 }
                 for s in page_snips
             ]
@@ -293,6 +369,7 @@ class LoginGetVideo(APIView):
             user=request.user,
             interest_categories=user_interest,
             feed=feed,
+            history_keywords=recent_watch_keywords(request.user),
         )
         combined = interleave_feed(ranked, youtube_items)
 
@@ -370,6 +447,8 @@ class GuestGetVideo(APIView):
                     "category_name": "Shortform Videos",
                     "view_count": s.view_count,
                     "is_snip": True,
+                    "content_type": "SNIP",
+                    "duration": s.duration,
                 }
                 for s in snip_serializer.instance
             ]
@@ -408,7 +487,10 @@ class GuestGetVideo(APIView):
         except (TypeError, ValueError):
             page_size = 20
 
-        youtube_items = build_youtube_feed(feed=None)
+        youtube_items = build_youtube_feed(
+            feed=None,
+            history_keywords=recent_watch_keywords(request.user),
+        )
         combined = interleave_feed(ranked, youtube_items)
 
         start = (page - 1) * page_size
@@ -560,10 +642,14 @@ class LoginWatchVideo(APIView):
 
         if video is None and validate_youtube_id(video_id):
             # A live YouTube ID that isn't stored as a CreekTube row: stream it
-            # straight from the YouTube Data API.
+            # straight from the YouTube Data API. Also learn its category so the
+            # home feed adapts to what the user actually watches.
             yt_item = get_youtube_video_details(video_id)
             if not yt_item:
                 return Response({"detail": "Video not found"}, status=404)
+            if yt_item.get("category"):
+                ensure_category(yt_item["category"], yt_item.get("category_name") or "")
+                record_category_interest(request.user, yt_item["category"])
             return Response({
                 "video": yt_item,
                 "related_videos": youtube_related_videos(video_id),
@@ -583,13 +669,12 @@ class LoginWatchVideo(APIView):
         if video.visibility == "private" and video.author != request.user:
             return Response({"detail": "Video not found"}, status=404)
 
-        # Boost category score
-        profile, _ = MediaProfile.objects.get_or_create(user=request.user)
+        # Boost category score: native category when present, otherwise learn it
+        # from the live YouTube API for stored-but-uncategorized YouTube rows.
         if video.category:
-            profile.categories = ranking.adjust_category_score(
-                profile.categories, video.category.slug, ranking.WATCH_BOOST
-            )
-            profile.save()
+            record_category_interest(request.user, video.category.slug)
+        else:
+            boost_youtube_watch_interest(request.user, video)
 
         # Record watch event with spam prevention
         record_view(request.user, video=video)
@@ -794,9 +879,22 @@ class SearchVideo(APIView):
         video_serializer = VideoSerializer(videos, many=True, context={'request': request})
         user_serializer = MediaProfileSerializer(users, many=True, context={'request': request})
 
+        # Live YouTube results (videos + channels) mixed into search.
+        youtube_videos = []
+        youtube_channels = []
+        if validate_youtube_id(title):
+            yt_item = get_youtube_video_details(title)
+            if yt_item:
+                youtube_videos.append(yt_item)
+        else:
+            youtube_videos = youtube_search_videos(title, limit=10)
+        youtube_channels = youtube_search_channels(title, limit=10)
+
         return Response({
             "videos": video_serializer.data,
             "users": user_serializer.data,
+            "youtube_videos": youtube_videos,
+            "youtube_channels": youtube_channels,
         }, status=status.HTTP_200_OK)
 
 
@@ -1247,6 +1345,8 @@ class AddYouTubeVideo(APIView):
             visibility = "public"
 
         metadata = get_video_metadata(video_id) or {}
+        details = get_youtube_video_details(video_id) or {}
+        duration = details.get("duration") or 0
 
         category_obj = None
         category = request.data.get("category")
@@ -1254,6 +1354,13 @@ class AddYouTubeVideo(APIView):
             category_obj, _ = CategoryVideo.objects.get_or_create(
                 slug=category,
                 defaults={"name": category.replace("-", " ").title()},
+            )
+        elif metadata.get("category"):
+            # No explicit category: derive one from the YouTube video's own
+            # category so stored YouTube rows are categorized from day one.
+            category_obj, _ = CategoryVideo.objects.get_or_create(
+                slug=metadata["category"],
+                defaults={"name": metadata.get("category_name") or metadata["category"].replace("-", " ").title()},
             )
 
         video = Video.objects.create(
@@ -1270,6 +1377,8 @@ class AddYouTubeVideo(APIView):
             visibility=visibility,
             timestamp=timezone.now(),
             is_approved=True,
+            duration=duration,
+            content_type=classify_content_type(duration),
         )
 
         record_upload(request.user)
@@ -1566,6 +1675,23 @@ class UploadSnip(APIView):
         if visibility not in ("public", "unlisted", "private"):
             visibility = "public"
 
+        # Duration is optional (seconds). Tolerate a raw ISO-8601 or "1:23"
+        # style string as well as a plain number.
+        duration = 0
+        raw_duration = request.data.get("duration", "")
+        if raw_duration not in (None, ""):
+            duration = youtube_duration_seconds(raw_duration)
+            if not duration:
+                parts = str(raw_duration).split(":")
+                try:
+                    parts = [int(p) for p in parts]
+                except (TypeError, ValueError):
+                    parts = []
+                if len(parts) == 2:
+                    duration = parts[0] * 60 + parts[1]
+                elif len(parts) == 3:
+                    duration = parts[0] * 3600 + parts[1] * 60 + parts[2]
+
         # Auto-generate thumbnail from Cloudinary video URL if none provided
         if not thumbnail_url and video_url and video_public_id:
             from django.conf import settings
@@ -1584,6 +1710,7 @@ class UploadSnip(APIView):
                 thumbnail_public_id=thumbnail_public_id,
                 visibility=visibility,
                 is_approved=False,
+                duration=duration,
             )
         except Exception as e:
             from .cloudinary_utils import delete_cloudinary_resource

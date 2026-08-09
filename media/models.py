@@ -54,6 +54,10 @@ class Video(models.Model):
         ("CREEKTUBE", "CreekTube"),
         ("YOUTUBE", "YouTube"),
     ]
+    CONTENT_TYPE_CHOICES = [
+        ("VIDEO", "Video"),
+        ("SNIP", "Snip"),
+    ]
 
     author = models.ForeignKey(User, on_delete=models.CASCADE)
     category = models.ForeignKey(
@@ -68,6 +72,8 @@ class Video(models.Model):
     thumbnail = models.TextField(blank=True, default="")
     video = models.TextField(blank=True, default="")
     source_type = models.CharField(max_length=20, choices=SOURCE_TYPE_CHOICES, default="CREEKTUBE")
+    content_type = models.CharField(max_length=10, choices=CONTENT_TYPE_CHOICES, default="VIDEO")
+    duration = models.PositiveIntegerField(default=0, help_text="Length in seconds (0 when unknown)")
     youtube_video_id = models.CharField(max_length=11, blank=True, default="")
     youtube_channel_id = models.CharField(max_length=64, blank=True, default="")
     youtube_channel_name = models.CharField(max_length=255, blank=True, default="")
@@ -101,6 +107,7 @@ class Snip(models.Model):
     is_approved = models.BooleanField(default=False)
     view_count = models.PositiveIntegerField(default=0)
     like_count = models.PositiveIntegerField(default=0)
+    duration = models.PositiveIntegerField(default=0, help_text="Length in seconds (0 when unknown)")
     category = models.ForeignKey(
         CategoryVideo,
         null=True,
