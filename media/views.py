@@ -264,6 +264,23 @@ def serialize_mixed_items(items, request):
     return [object_data.get(item.id) if isinstance(item, Video) else item for item in items]
 
 
+def _epoch(value):
+    """Parse a serialized timestamp (ISO string, epoch number, or datetime) into epoch seconds."""
+    if not value:
+        return 0.0
+    if isinstance(value, (int, float)):
+        return float(value)
+    try:
+        from datetime import datetime, timezone
+
+        parsed = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+        if parsed.tzinfo is None:
+            parsed = parsed.replace(tzinfo=timezone.utc)
+        return parsed.timestamp()
+    except Exception:
+        return 0.0
+
+
 def recent_watch_keywords(user, limit=3):
     """Derive up to ``limit`` discovery keywords from a user's recent watches.
 
@@ -343,21 +360,10 @@ class LoginGetVideo(APIView):
                 )
                 snips = snips.filter(author_id__in=creeked_ids)
             if sort == 'views':
-                snips = snips.order_by('-view_count')
+                native_items = list(snips.order_by('-view_count'))
             else:
-                snips = snips.order_by('-timestamp')
-            total = snips.count()
-            try:
-                page = max(int(request.query_params.get('page', 1)), 1)
-            except (TypeError, ValueError):
-                page = 1
-            try:
-                page_size = min(max(int(request.query_params.get('page_size', 20)), 1), 100)
-            except (TypeError, ValueError):
-                page_size = 20
+                native_items = list(snips.order_by('-timestamp'))
 
-            start = (page - 1) * page_size
-            page_snips = snips[start:start + page_size]
             results = [
                 {
                     "id": s.id,
@@ -377,10 +383,31 @@ class LoginGetVideo(APIView):
                     "content_type": "SNIP",
                     "duration": s.duration,
                 }
-                for s in page_snips
+                for s in native_items
             ]
+
+            # Mix in live YouTube Shorts (unless on the "following" feed,
+            # where only creators the user actually follows make sense).
+            if feed != 'following':
+                results += build_youtube_snips_feed(request.user, limit=40)
+                if sort == 'views':
+                    results.sort(key=lambda item: item.get("view_count") or 0, reverse=True)
+                else:
+                    results.sort(key=lambda item: _epoch(item.get("timestamp")), reverse=True)
+
+            total = len(results)
+            try:
+                page = max(int(request.query_params.get('page', 1)), 1)
+            except (TypeError, ValueError):
+                page = 1
+            try:
+                page_size = min(max(int(request.query_params.get('page_size', 20)), 1), 100)
+            except (TypeError, ValueError):
+                page_size = 20
+
+            start = (page - 1) * page_size
             return Response({
-                "results": results,
+                "results": results[start:start + page_size],
                 "page": page,
                 "page_size": page_size,
                 "count": total,
@@ -479,26 +506,10 @@ class GuestGetVideo(APIView):
         if category_param in ['shortform-videos', 'snips']:
             snips = Snip.objects.filter(is_approved=True, visibility="public", author__is_active=True).select_related('author')
             if sort == 'views':
-                snips = snips.order_by('-view_count')
+                native_items = list(snips.order_by('-view_count'))
             else:
-                snips = snips.order_by('-timestamp')
-            total = snips.count()
-            try:
-                page = max(int(request.query_params.get('page', 1)), 1)
-            except (TypeError, ValueError):
-                page = 1
-            try:
-                page_size = min(max(int(request.query_params.get('page_size', 20)), 1), 100)
-            except (TypeError, ValueError):
-                page_size = 20
+                native_items = list(snips.order_by('-timestamp'))
 
-            start = (page - 1) * page_size
-            page_snips = snips[start:start + page_size]
-            # Serialize Snips
-            snip_serializer = SnipSerializer(page_snips, many=True, context={'request': request})
-
-            # Add avatar
-            # Profile = Profile.objects.filter(user=s.author).first()
             results = [
                 {
                     "id": s.id,
@@ -518,10 +529,30 @@ class GuestGetVideo(APIView):
                     "content_type": "SNIP",
                     "duration": s.duration,
                 }
-                for s in snip_serializer.instance
+                for s in native_items
             ]
+
+            # Mix in live YouTube Shorts so the homepage Snips tab matches the
+            # dedicated /snips feed.
+            results += build_youtube_snips_feed(request.user, limit=40)
+            if sort == 'views':
+                results.sort(key=lambda item: item.get("view_count") or 0, reverse=True)
+            else:
+                results.sort(key=lambda item: _epoch(item.get("timestamp")), reverse=True)
+
+            total = len(results)
+            try:
+                page = max(int(request.query_params.get('page', 1)), 1)
+            except (TypeError, ValueError):
+                page = 1
+            try:
+                page_size = min(max(int(request.query_params.get('page_size', 20)), 1), 100)
+            except (TypeError, ValueError):
+                page_size = 20
+
+            start = (page - 1) * page_size
             return Response({
-                "results": results,
+                "results": results[start:start + page_size],
                 "page": page,
                 "page_size": page_size,
                 "count": total,
@@ -1908,21 +1939,6 @@ class SnipFeed(APIView):
 
         youtube_items = build_youtube_snips_feed(request.user, limit=40)
         youtube_total = len(youtube_items)
-
-        def _epoch(value):
-            if not value:
-                return 0.0
-            if isinstance(value, (int, float)):
-                return float(value)
-            try:
-                from datetime import datetime, timezone
-
-                parsed = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
-                if parsed.tzinfo is None:
-                    parsed = parsed.replace(tzinfo=timezone.utc)
-                return parsed.timestamp()
-            except Exception:
-                return 0.0
 
         combined = [(_epoch(item["timestamp"]), item) for item in native_items]
         combined += [(_epoch(item["timestamp"]), item) for item in youtube_items]

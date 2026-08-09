@@ -560,6 +560,8 @@ def build_youtube_feed(user=None, interest_categories=None, limit=FEED_TOTAL_ITE
             item["duration"] = durations.get(item["id"], 0)
             item["content_type"] = classify_content_type(item["duration"])
         _attach_youtube_enrichment(items)
+        # YouTube Shorts belong in the Snips feed, not the main video feed.
+        items = [item for item in items if item.get("content_type") != SNIP]
     return items
 
 

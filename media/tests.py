@@ -662,7 +662,13 @@ def fake_youtube_request(endpoint, params):
                     "publishedAt": "2024-01-01T00:00:00Z",
                 }
             if "contentDetails" in part:
-                item["contentDetails"] = {"duration": "PT45S"}
+                # First mock id is a Short (PT45S), the rest are long-form so
+                # the main video feed only ever mixes in long YouTube videos.
+                try:
+                    idx = VALID_YT_IDS.index(vid)
+                except ValueError:
+                    idx = 0
+                item["contentDetails"] = {"duration": "PT45S" if idx == 0 else "PT6M"}
             items.append(item)
         return {"items": items}
     if endpoint == "channels":
@@ -760,6 +766,37 @@ class LiveYouTubeFeedTests(LiveYouTubeMixin, TestCase):
         self.assertTrue(len(yt_items) > 0)
         # YouTube items never repeat a native video's id or title.
         self.assertNotIn(native.id, [v["id"] for v in yt_items])
+
+    def test_main_feed_excludes_youtube_shorts(self):
+        self.mock_api()
+        make_video(self.other, self.gaming, hours_old=1, title="native_main")
+        resp = self.client.get("/media/guestgetvideo/")
+        self.assertEqual(resp.status_code, 200)
+        for v in resp.data["results"]:
+            if v["source_type"] == "YOUTUBE":
+                self.assertEqual(v["content_type"], "VIDEO")
+
+    def test_homepage_snips_tab_mixes_youtube_shorts(self):
+        self.mock_api()
+        Snip.objects.create(
+            author=self.other, title="native_snip_home", description="",
+            video="native.mp4", thumbnail="", visibility="public",
+            is_approved=True,
+        )
+        resp = self.client.get("/media/guestgetvideo/?category=shortform-videos")
+        self.assertEqual(resp.status_code, 200)
+        titles = [item["title"] for item in resp.data["results"]]
+        self.assertIn("native_snip_home", titles)
+        yt_shorts = [
+            item for item in resp.data["results"]
+            if item.get("source_type") == "YOUTUBE" and item.get("content_type") == "SNIP"
+        ]
+        self.assertTrue(len(yt_shorts) > 0)
+        self.assertEqual(yt_shorts[0]["id"], VALID_YT_IDS[0])
+        self.assertEqual(
+            yt_shorts[0]["embed_url"],
+            f"https://www.youtube.com/embed/{VALID_YT_IDS[0]}",
+        )
 
     def test_logged_in_feed_builds_queries_from_interests(self):
         self.mock_api()
