@@ -2,6 +2,7 @@ from datetime import timedelta
 from unittest import mock
 
 from django.contrib.auth.models import User
+from django.db import IntegrityError
 from django.test import TestCase
 from django.utils import timezone
 from rest_framework.test import APIClient
@@ -14,6 +15,7 @@ from .youtube import (normalize_youtube_url, validate_youtube_id,
                       youtube_embed_url, youtube_thumbnail_url, get_video_metadata,
                       YOUTUBE_SYSTEM_USERNAME)
 from .Serializers import VideoSerializer
+from .views import ensure_category, recent_watch_keywords
 
 
 def make_video(author, category, hours_old=0, is_approved=True, title="video"):
@@ -1056,4 +1058,89 @@ class LiveYouTubeSnipTests(LiveYouTubeMixin, TestCase):
         )
         self.assertEqual(resp.status_code, 200)
         self.assertEqual(resp.data["type"], "snips")
+
+
+# ---------------------------------------------------------------------------
+# ensure_category race-safety
+# ---------------------------------------------------------------------------
+class EnsureCategoryTests(TestCase):
+    def test_existing_slug_is_returned(self):
+        cat = CategoryVideo.objects.create(slug="music", name="Music")
+        self.assertEqual(ensure_category("music"), cat)
+
+    def test_existing_name_is_reused_under_different_slug(self):
+        existing = CategoryVideo.objects.create(slug="news-and-politics", name="News & Politics")
+        got = ensure_category("news-and-politics", name="News & Politics")
+        self.assertEqual(got.id, existing.id)
+        self.assertEqual(CategoryVideo.objects.filter(name="News & Politics").count(), 1)
+
+    def test_duplicate_name_is_returned_not_duplicated(self):
+        existing = CategoryVideo.objects.create(slug="news-and-politics", name="News & Politics")
+        got = ensure_category("news-and-politics", name="News & Politics")
+        self.assertEqual(got.id, existing.id)
+        self.assertEqual(CategoryVideo.objects.count(), 1)
+
+    def test_racing_create_is_recovered(self):
+        existing = CategoryVideo.objects.create(slug="sports", name="Sports")
+        real_filter = CategoryVideo.objects.filter
+        state = {"calls": 0}
+
+        def fake_first(*args, **kwargs):
+            state["calls"] += 1
+            # Pre-checks miss, the post-IntegrityError refetch hits.
+            return existing if state["calls"] >= 3 else None
+
+        def fake_filter(*args, **kwargs):
+            qs = real_filter(*args, **kwargs)
+            qs.first = fake_first
+            return qs
+
+        with mock.patch.object(CategoryVideo.objects, "create", side_effect=IntegrityError("dup")), \
+             mock.patch.object(CategoryVideo.objects, "filter", side_effect=fake_filter):
+            got = ensure_category("sports", name="Sports")
+        self.assertEqual(got.id, existing.id)
+
+
+# ---------------------------------------------------------------------------
+# recent_watch_keywords discovery-phrase extraction
+# ---------------------------------------------------------------------------
+class RecentWatchKeywordTests(TestCase):
+    def setUp(self):
+        self.user = User.objects.create_user(username="kw_user", password="pw")
+        self.other = User.objects.create_user(username="kw_author", password="pw")
+        self.music = CategoryVideo.objects.create(name="Music", slug="music")
+
+    def test_watch_query_phrase_keeps_leading_title_segment(self):
+        from .views import _watch_query_phrase
+        self.assertEqual(
+            _watch_query_phrase("Sweater Weather - The NeighbourHood Lyrics Video"),
+            "sweater weather",
+        )
+
+    def test_recent_watch_keywords_yield_phrase_not_bare_first_word(self):
+        video = make_video(
+            self.other, self.music,
+            title="Sweater Weather - The NeighbourHood Lyrics Video",
+        )
+        make_watch_event(self.user, video)
+        self.assertEqual(recent_watch_keywords(self.user), ["sweater weather"])
+        self.assertNotIn("sweater", recent_watch_keywords(self.user))
+
+    def test_recent_watch_keywords_prefer_youtube_channel_name(self):
+        Video.objects.create(
+            author=self.other,
+            category=self.music,
+            title="Sweater Weather - The NeighbourHood Lyrics Video",
+            description="desc",
+            is_approved=True,
+            source_type="YOUTUBE",
+            youtube_video_id="dQw4w9WgXcQ",
+            youtube_channel_name="The Neighbourhood",
+        )
+        video = Video.objects.get(youtube_video_id="dQw4w9WgXcQ")
+        make_watch_event(self.user, video)
+        self.assertEqual(
+            recent_watch_keywords(self.user),
+            ["the neighbourhood", "sweater weather"],
+        )
 

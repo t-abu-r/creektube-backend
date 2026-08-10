@@ -13,6 +13,7 @@ from .models import (Video, Comment, CommentLike, CategoryVideo, MediaProfile, L
                      DisPike, Creek, WatchEvent, UploadRateLimit, Notification, Snip, SnipLike,
                      ModActionLog)
 from django.db.models import Count, Q, Sum, Avg, F, Max
+from django.db import IntegrityError
 from . import ranking
 from .youtube import (normalize_youtube_url, get_video_metadata, youtube_thumbnail_url,
                       validate_youtube_id, build_youtube_feed, get_youtube_video_details,
@@ -24,6 +25,7 @@ from .youtube import (normalize_youtube_url, get_video_metadata, youtube_thumbna
                       YOUTUBE_SYSTEM_USERNAME)
 from .content import classify_content_type
 import logging
+import re
 from django.db.models.functions import TruncDate
 logger = logging.getLogger(__name__)
 from django.views.decorators.csrf import csrf_exempt
@@ -107,14 +109,31 @@ def check_comment_spam(user, video):
 
 
 def ensure_category(slug, name=""):
-    """Return the CategoryVideo row for ``slug``, creating it if needed."""
+    """Return the CategoryVideo row for ``slug``, creating it if needed.
+
+    Safe under concurrent requests (serverless runs many Lambda workers): it
+    falls back to an existing row with the same display name, and re-fetches
+    when a racing create loses the unique constraint.
+    """
     if not slug:
         return None
-    category, _ = CategoryVideo.objects.get_or_create(
-        slug=slug,
-        defaults={"name": name or slug.replace("-", " ").title()},
-    )
-    return category
+    name = (name or slug.replace("-", " ").title()).strip()
+    category = CategoryVideo.objects.filter(slug=slug).first()
+    if category:
+        return category
+    # A different slug may already carry this display name (e.g. the API
+    # reporting "News & Politics" under several slugs at once).
+    category = CategoryVideo.objects.filter(name__iexact=name).first()
+    if category:
+        return category
+    try:
+        return CategoryVideo.objects.create(slug=slug, name=name)
+    except IntegrityError:
+        # A concurrent request just created it; fetch whichever row won.
+        return (
+            CategoryVideo.objects.filter(slug=slug).first()
+            or CategoryVideo.objects.filter(name__iexact=name).first()
+        )
 
 
 def record_category_interest(user, category_slug, boost=ranking.WATCH_BOOST):
@@ -287,32 +306,57 @@ def _epoch(value):
         return 0.0
 
 
-def recent_watch_keywords(user, limit=3):
-    """Derive up to ``limit`` discovery keywords from a user's recent watches.
+_WATCH_QUERY_STOPWORDS = {
+    "the", "and", "for", "with", "that", "this", "your", "you", "are", "was",
+    "were", "not", "but", "from", "they", "their", "them", "video", "videos",
+    "official", "lyrics", "lyric", "music", "audio", "song", "full", "hd",
+    "4k", "new", "mix", "remix", "edit", "cover", "live", "album", "single",
+    "track", "feat", "ft", "featuring", "part", "version", "visualizer",
+    "clip", "movie", "slowed", "reverb", "best", "top", "ultimate",
+}
 
-    Words come from the titles of the most recent videos/snips the user
-    watched, so the live feed can mix in topics they actually engage with.
+
+def _watch_query_phrase(title):
+    """Reduce a watched title to a useful YouTube discovery phrase.
+
+    Keeps the leading title segment (before artist/suffix separators) and
+    drops filler tokens, so "Sweater Weather - The NeighbourHood Lyrics Video"
+    yields "sweater weather" instead of the naive bare word "sweater".
+    """
+    if not title:
+        return ""
+    lead = re.split(r"\s*[-–—|·]\s*", title)[0]
+    words = [
+        w for w in lead.split()
+        if "".join(ch for ch in w.lower() if ch.isalnum()) not in _WATCH_QUERY_STOPWORDS
+    ]
+    return " ".join(words).strip().lower()[:64]
+
+
+def recent_watch_keywords(user, limit=3):
+    """Derive up to ``limit`` discovery phrases from a user's recent watches.
+
+    The most recent video/snip titles are turned into full query phrases (not
+    single words) so a watch of "Sweater Weather" surfaces the song rather
+    than unrelated "sweater" results. Stored YouTube rows contribute their
+    channel name, which is usually the strongest discovery signal.
     """
     if not user or not user.is_authenticated:
         return []
-    titles = []
     events = (WatchEvent.objects.filter(user=user)
               .select_related("video", "snip")
               .order_by("-timestamp")[:12])
-    for event in events:
-        title = ""
-        if event.video:
-            title = event.video.title
-        elif event.snip:
-            title = event.snip.title
-        if title:
-            titles.append(title)
     keywords = []
-    for title in titles:
-        for word in title.split():
-            cleaned = "".join(ch for ch in word.lower() if ch.isalnum())
-            if len(cleaned) >= 3 and cleaned not in keywords:
-                keywords.append(cleaned)
+    for event in events:
+        video = event.video
+        if video and video.source_type == "YOUTUBE" and video.youtube_channel_name:
+            channel = video.youtube_channel_name.strip().lower()
+            if channel and channel not in keywords:
+                keywords.append(channel)
+        title = video.title if video else (event.snip.title if event.snip else "")
+        phrase = _watch_query_phrase(title)
+        if phrase and phrase not in keywords:
+            keywords.append(phrase)
         if len(keywords) >= limit:
             break
     return keywords[:limit]
