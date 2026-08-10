@@ -7,7 +7,7 @@ from rest_framework.test import APIClient
 
 from . import ranking
 from .models import (CategoryVideo, Creek, DisPike, Like, MediaProfile,
-                     Snip, Video, WatchEvent, UploadRateLimit)
+                     Snip, Video, WatchEvent, UploadRateLimit, UserTitle)
 
 
 def make_video(author, category, hours_old=0, is_approved=True, title="video"):
@@ -443,3 +443,121 @@ class FeedViewTests(TestCase):
         video_data = resp.data["results"][0]
         self.assertIn("view_count", video_data)
         self.assertEqual(video_data["view_count"], 0)
+
+
+# ---------------------------------------------------------------------------
+# Hashtag tags: extraction, learning, ranking, interest page
+# ---------------------------------------------------------------------------
+class TagFeatureTests(TestCase):
+    def setUp(self):
+        self.client = APIClient()
+        self.user = User.objects.create_user(username="tag_user", password="pw")
+        self.other = User.objects.create_user(username="tag_author", password="pw")
+        self.music = CategoryVideo.objects.create(name="Music", slug="music")
+
+    def test_extract_hashtags_normalizes_and_dedupes(self):
+        from .tags import extract_hashtags
+        self.assertEqual(
+            extract_hashtags("Set Fire #Music #Music #theneighbourhood", "desc #Gaming"),
+            ["music", "theneighbourhood", "gaming"],
+        )
+
+    def test_apply_tags_from_title_and_description(self):
+        from .tags import apply_tags, tag_names_for
+        video = make_video(self.other, self.music, title="My Song #Music #theneighbourhood")
+        video.description = "#concert"
+        video.save()
+        apply_tags(video, video.title, video.description)
+        self.assertEqual(set(tag_names_for(video)), {"music", "theneighbourhood", "concert"})
+
+    def test_watch_learns_tag_interests(self):
+        from .tags import apply_tags
+        from .views import record_tag_interest_from_watch
+        video = make_video(self.other, self.music, title="Song #theneighbourhood")
+        apply_tags(video, video.title, video.description)
+        record_tag_interest_from_watch(self.user, video=video)
+        profile = MediaProfile.objects.get(user=self.user)
+        self.assertGreaterEqual(profile.tags.get("theneighbourhood", 0), 1)
+
+    def test_tag_affinity_outranks_no_match(self):
+        from .ranking import tag_affinity
+        self.assertGreater(
+            tag_affinity(["theneighbourhood"], {"theneighbourhood": 10}),
+            tag_affinity(["someotherband"], {"theneighbourhood": 10}),
+        )
+
+    def test_interest_tag_page_returns_videos_and_snips(self):
+        from .tags import apply_tags
+        video = make_video(self.other, self.music, title="Song #music")
+        apply_tags(video, video.title, video.description)
+        snip = Snip.objects.create(
+            author=self.other, category=self.music, title="Clip #music",
+            description="d", is_approved=True, visibility="public",
+        )
+        apply_tags(snip, snip.title, snip.description)
+        resp = self.client.get("/media/interests/music/")
+        self.assertEqual(resp.status_code, 200)
+        self.assertEqual(resp.data["tag"], "music")
+        self.assertEqual(len(resp.data["videos"]), 1)
+        self.assertEqual(len(resp.data["snips"]), 1)
+
+
+# ---------------------------------------------------------------------------
+# Superuser title panel + restricted moderator permissions
+# ---------------------------------------------------------------------------
+class AdminTitleTests(TestCase):
+    def setUp(self):
+        self.client = APIClient()
+        self.admin = User.objects.create_user(username="root", password="pw", is_superuser=True)
+        self.mod_user = User.objects.create_user(username="moddy", password="pw")
+        self.victim = User.objects.create_user(username="victim", password="pw")
+        self.mod_profile = MediaProfile.objects.create(user=self.mod_user)
+        self.victim_profile = MediaProfile.objects.create(user=self.victim)
+        self.music = CategoryVideo.objects.create(name="Music", slug="music")
+
+    def test_superuser_creates_and_grants_title(self):
+        self.client.force_authenticate(user=self.admin)
+        resp = self.client.post(
+            "/media/admin-titles/",
+            {"name": "Approver", "color": "#00ff00", "symbol": "S",
+             "permissions": ["mod.approve", "bogus.perm"]},
+            format="json",
+        )
+        self.assertEqual(resp.status_code, 201)
+        self.assertEqual(resp.data["permissions"], ["mod.approve"])
+
+        grant = self.client.post(
+            "/media/admin-users/",
+            {"id": self.mod_profile.id, "title_id": resp.data["id"], "active": True},
+            format="json",
+        )
+        self.assertEqual(grant.status_code, 200)
+        self.mod_profile.refresh_from_db()
+        self.assertTrue(self.mod_profile.is_moderator())
+        self.assertTrue(self.mod_profile.has_permission("mod.approve"))
+        self.assertFalse(self.mod_profile.has_permission("mod.deactivate"))
+
+    def test_restricted_mod_cannot_deactivate_accounts(self):
+        title = UserTitle.objects.create(
+            name="Approver", color="#0f0", symbol="A", permissions=["mod.approve"]
+        )
+        self.mod_profile.titles.add(title)
+        self.mod_profile.refresh_from_db()
+        self.client.force_authenticate(user=self.mod_user)
+        resp = self.client.post(
+            "/media/set-account-active/",
+            {"id": self.victim_profile.id, "active": False, "reason": "x"},
+        )
+        self.assertEqual(resp.status_code, 403)
+
+    def test_restricted_mod_cannot_view_admin_panel(self):
+        title = UserTitle.objects.create(
+            name="Approver", color="#0f0", symbol="A", permissions=["mod.approve"]
+        )
+        self.mod_profile.titles.add(title)
+        self.client.force_authenticate(user=self.mod_user)
+        self.assertEqual(self.client.get("/media/admin-panel/").status_code, 403)
+
+    def test_anonymous_cannot_create_titles(self):
+        resp = self.client.post("/media/admin-titles/", {"name": "Rogue", "permissions": []})
+        self.assertIn(resp.status_code, (401, 403))

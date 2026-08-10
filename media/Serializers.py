@@ -2,6 +2,7 @@ from rest_framework import serializers
 from accounts.models import Profile
 import os
 from .models import *
+from .tags import tag_names_for
 
 
 class MediaProfileSerializer(serializers.ModelSerializer):
@@ -142,14 +143,18 @@ class SnipSerializer(serializers.ModelSerializer):
     video = serializers.SerializerMethodField()
     thumbnail = serializers.SerializerMethodField()
     is_liked = serializers.SerializerMethodField()
+    tags = serializers.SerializerMethodField()
 
     class Meta:
         model = Snip
         fields = [
             "id", "title", "description", "video", "thumbnail", "visibility", "timestamp",
             "is_approved", "author", "author_id", "author_avatar", "author_active",
-            "view_count", "like_count", "is_liked",
+            "view_count", "like_count", "is_liked", "tags",
         ]
+
+    def get_tags(self, obj):
+        return tag_names_for(obj)
 
     def get_author_active(self, obj):
         return obj.author.is_active
@@ -200,14 +205,18 @@ class VideoSerializer(serializers.ModelSerializer):
     category_name = serializers.SerializerMethodField()
     author_id = serializers.SerializerMethodField()
     view_count = serializers.IntegerField(read_only=True)
+    tags = serializers.SerializerMethodField()
 
     class Meta:
         model = Video
         fields = [
             "id", "category", "category_name", "title", "description", "thumbnail", "video", "visibility",
             "timestamp", "is_approved", "author", "author_id", "author_avatar", "author_active",
-            "comments", "view_count",
+            "comments", "view_count", "tags",
         ]
+
+    def get_tags(self, obj):
+        return tag_names_for(obj)
 
     def get_author_active(self, obj):
         return obj.author.is_active

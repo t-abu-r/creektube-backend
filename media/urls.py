@@ -20,6 +20,7 @@ urlpatterns = [
 
     path("categories/", Categories.as_view(), name="Categories"),
     path("categories/manage/", CategoryManage.as_view(), name="CategoryManage"),
+    path("interests/<str:tag>/", InterestTag.as_view(), name="InterestTag"),
     path("comment/", CommentVideo.as_view(), name="CommentVideo"),
     path("pincomment/", PinComment.as_view(), name="PinComment"),
     # MOD PANEL
@@ -28,6 +29,11 @@ urlpatterns = [
     path("mod-logs/", ModActionLogs.as_view(), name="ModActionLogs"),
     path("getmod/", IfModerator.as_view(), name="GetMod"),
     path("mod-panel/searchusers/", SearchUsersMod.as_view(), name="GetModList"),
+
+    # SUPERUSER ADMIN PANEL
+    path("admin-panel/", AdminPanel.as_view(), name="AdminPanel"),
+    path("admin-titles/", AdminTitles.as_view(), name="AdminTitles"),
+    path("admin-users/", AdminUsers.as_view(), name="AdminUsers"),
 
     path("searchusers/", SearchUsers.as_view(), name="SearchUsers"),
 

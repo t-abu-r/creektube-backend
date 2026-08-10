@@ -21,12 +21,19 @@ from django.utils import timezone
 # without touching view logic.
 # ---------------------------------------------------------------------------
 WEIGHTS = {
+    # Tags rank above categories: inside the Music category the user may
+    # follow a specific person (#theneighbourhood), so a tag match should
+    # beat a generic category match.
+    "tags": 4.0,
     "interest": 3.0,
     "engagement": 2.0,
     "recency": 2.5,
     "creek": 1.5,
     "cowatch": 2.0,
 }
+
+TAG_BOOST = 1.0
+MAX_TAG_SCORE = 100
 
 RECENCY_HALF_LIFE_HOURS = 48
 EXPLORATION_FLOOR = 0.15
@@ -57,6 +64,31 @@ def interest_affinity(category_slug, user_interests):
         return EXPLORATION_FLOOR
 
     return raw / max_score
+
+
+def tag_affinity(video_tags, user_tag_interests):
+    """How well a video's tags match the user's learned tag interests.
+
+    ``video_tags`` is an iterable of tag names; ``user_tag_interests`` is a
+    ``{tag_name: score}`` dict. Returns ~[0, 1] normalized against the user's
+    strongest tag interest. With no learned tags there is no tag signal, so it
+    returns 0 (category/engagement/recency decide).
+    """
+    if not user_tag_interests:
+        return 0.0
+    max_score = max(user_tag_interests.values())
+    if max_score <= 0:
+        return 0.0
+    video_tags = set(video_tags or [])
+    if not video_tags:
+        return 0.0
+    matched = sum(
+        score for tag, score in user_tag_interests.items()
+        if tag in video_tags
+    )
+    if matched <= 0:
+        return 0.0
+    return min(matched / max_score, 1.0)
 
 
 def engagement_score(likes, dislikes):
@@ -178,12 +210,17 @@ def build_cowatch_map(user_recent_video_ids, all_video_ids):
 
 
 def score_video(video, user_interests, creeked_author_ids, likes_count=None,
-                dislikes_count=None, cowatch_map=None, user_recent_video_ids=None):
+                dislikes_count=None, cowatch_map=None, user_recent_video_ids=None,
+                user_tag_interests=None, video_tags=None):
     """
     Compute a single composite score for a video.
     """
     category_slug = video.category.slug if video.category_id else None
     interest = interest_affinity(category_slug, user_interests)
+
+    if video_tags is None:
+        video_tags = [t.name for t in video.tags.all()]
+    tags = tag_affinity(video_tags, user_tag_interests)
 
     likes = likes_count if likes_count is not None else getattr(video, "num_likes", None)
     dislikes = dislikes_count if dislikes_count is not None else getattr(video, "num_dislikes", None)
@@ -202,7 +239,8 @@ def score_video(video, user_interests, creeked_author_ids, likes_count=None,
     )
 
     return (
-        WEIGHTS["interest"] * interest
+        WEIGHTS["tags"] * tags
+        + WEIGHTS["interest"] * interest
         + WEIGHTS["engagement"] * engagement
         + WEIGHTS["recency"] * recency
         + WEIGHTS["creek"] * creek_bonus
@@ -211,16 +249,32 @@ def score_video(video, user_interests, creeked_author_ids, likes_count=None,
 
 
 def rank_videos(videos, user_interests, creeked_author_ids,
-                 cowatch_map=None, user_recent_video_ids=None):
-    """Sort an iterable of (already-annotated) videos by composite score, desc."""
+                cowatch_map=None, user_recent_video_ids=None,
+                user_tag_interests=None, video_tag_map=None):
+    """Sort an iterable of (already-annotated) videos by composite score, desc.
+
+    ``video_tag_map`` (``{video_id: [tag names]}``) avoids a tags query per
+    video; when omitted, each video's tags are fetched through its M2M.
+    """
     scored = [
         (score_video(v, user_interests, creeked_author_ids,
                      cowatch_map=cowatch_map,
-                     user_recent_video_ids=user_recent_video_ids), v)
+                     user_recent_video_ids=user_recent_video_ids,
+                     user_tag_interests=user_tag_interests,
+                     video_tags=video_tag_map.get(v.id) if video_tag_map else None), v)
         for v in videos
     ]
     scored.sort(key=lambda pair: pair[0], reverse=True)
     return [v for _, v in scored]
+
+
+def adjust_tag_score(tags: dict, tag: str, delta: int) -> dict:
+    """Bump a learned tag score up or down, clamped to tag score bounds."""
+    if not tag:
+        return tags
+    current = tags.get(tag, 0)
+    tags[tag] = max(MIN_CATEGORY_SCORE, min(MAX_TAG_SCORE, current + delta))
+    return tags
 
 
 def adjust_category_score(categories: dict, category_slug: str, delta: int) -> dict:

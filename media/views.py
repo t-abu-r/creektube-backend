@@ -6,12 +6,14 @@ from rest_framework.response import Response
 from rest_framework.status import HTTP_400_BAD_REQUEST
 from rest_framework.views import APIView
 from django.utils import timezone
-from .permissions import IsModerator
+from django.contrib.auth.models import User
+from .permissions import IsModerator, IsSuperUser
 from .Serializers import *
 from accounts.serializers import ProfileSerializer
 from .models import (Video, Comment, CommentLike, CategoryVideo, MediaProfile, Like,
                      DisPike, Creek, WatchEvent, UploadRateLimit, Notification, Snip, SnipLike,
-                     ModActionLog)
+                     ModActionLog, UserTitle)
+from .tags import apply_tags, tag_names_for
 from django.db.models import Count, Q, Sum, Avg, F, Max
 from . import ranking
 import logging
@@ -32,6 +34,35 @@ VIEW_GAP = timedelta(minutes=2)  # min time between views from same user on same
 VIEW_MAX_PER_USER = 6  # max views per user per video/snip
 COMMENT_SPAM_LIMIT = 6  # max comments per video
 COMMENT_SPAM_WINDOW = timedelta(minutes=2)
+
+# ---------------------------------------------------------------------------
+# Admin titles: the permission catalog that titles can carry.
+# ---------------------------------------------------------------------------
+ADMIN_PERMISSIONS = [
+    {"code": "mod.approve", "label": "Approve / reject videos & snips"},
+    {"code": "mod.deactivate", "label": "Deactivate / reactivate accounts"},
+    {"code": "mod.view_logs", "label": "View moderation logs"},
+    {"code": "official.badge", "label": "Official account badge"},
+]
+
+
+def _sync_legacy_title_flags(profile):
+    """Keep the legacy ``moderator``/``official`` booleans in sync with titles."""
+    perms = profile.granted_permissions()
+    profile.moderator = bool(perms & {"mod.approve", "mod.deactivate", "mod.view_logs"})
+    profile.official = "official.badge" in perms
+    profile.save(update_fields=["moderator", "official"])
+
+
+def _title_payload(title):
+    return {
+        "id": title.pk,
+        "name": title.name,
+        "color": title.color,
+        "symbol": title.symbol,
+        "permissions": title.permissions or [],
+        "holder_count": title.holders.count(),
+    }
 
 
 def check_upload_rate_limit(user):
@@ -95,6 +126,32 @@ def check_comment_spam(user, video):
         author=user, video=video, timestamp__gte=cutoff
     ).count()
     return recent < COMMENT_SPAM_LIMIT
+
+
+def record_tag_interest(user, tag_names, boost=ranking.TAG_BOOST):
+    """Boost a user's tag-interest scores for ``tag_names`` after a watch.
+
+    Tag interests outrank category interests in the feed, so a Music viewer
+    who watches a specific artist (#theneighbourhood) keeps seeing that artist
+    on top of the generic Music bucket.
+    """
+    if not user or not user.is_authenticated:
+        return
+    names = [n for n in (tag_names or []) if n]
+    if not names:
+        return
+    profile, _ = MediaProfile.objects.get_or_create(user=user)
+    for name in names:
+        profile.tags = ranking.adjust_tag_score(profile.tags, name, boost)
+    profile.save()
+
+
+def record_tag_interest_from_watch(user, video=None, snip=None):
+    """Learn tag interests from a just-watched video/snip."""
+    if video is not None:
+        record_tag_interest(user, tag_names_for(video))
+    elif snip is not None:
+        record_tag_interest(user, tag_names_for(snip))
 
 
 # ---------------------------
@@ -196,6 +253,7 @@ class LoginGetVideo(APIView):
         approved_videos = (
             Video.objects.filter(is_approved=True, visibility="public", author__is_active=True)
             .select_related('category')
+            .prefetch_related('tags')
             .annotate(
                 num_likes=Count('likes', distinct=True),
                 num_dislikes=Count('dispikes', distinct=True),
@@ -219,9 +277,16 @@ class LoginGetVideo(APIView):
         candidate_ids = [v.id for v in candidates]
         cowatch_map = ranking.build_cowatch_map(user_recent_ids, candidate_ids) if user_recent_ids else {}
 
+        # Tag interests outrank categories, so pass the per-video tag map to
+        # the ranker (tags are prefetched above, no extra queries).
+        video_tag_map = {
+            v.id: [t.name for t in v.tags.all()]
+            for v in candidates
+        }
         ranked = ranking.rank_videos(
             candidates, user_interest, creeked_author_ids,
             cowatch_map=cowatch_map, user_recent_video_ids=user_recent_ids,
+            user_tag_interests=profile.tags, video_tag_map=video_tag_map,
         )
 
         try:
@@ -496,6 +561,8 @@ class LoginWatchVideo(APIView):
 
         # Record watch event with spam prevention
         record_view(request.user, video=video)
+        # Learn tag interests so #hashtags outrank the plain category.
+        record_tag_interest_from_watch(request.user, video=video)
 
         # Co-watch powered related videos
         user_recent_ids = ranking.get_user_recent_video_ids(request.user)
@@ -705,6 +772,46 @@ class SearchUsersMod(APIView):
         serializer = MediaProfileSerializer(users, many=True, context={'request': request})
         return Response(serializer.data, status=status.HTTP_200_OK)
 
+
+class InterestTag(APIView):
+    """Every CreekTube video/snip carrying a hashtag.
+
+    Any user can write ``#whatever`` in a title or description; that hashtag
+    gets its own page at ``/interests/<tag>``.
+    """
+
+    permission_classes = [AllowAny]
+
+    def get(self, request, tag):
+        cleaned = str(tag).strip().lstrip("#").lower()
+        if not cleaned:
+            return Response({"detail": "Tag is required"}, status=400)
+
+        videos = (
+            Video.objects.filter(
+                is_approved=True, visibility="public", author__is_active=True,
+                tags__name=cleaned,
+            )
+            .select_related("category", "author")
+            .distinct()
+            .order_by("-timestamp")[:40]
+        )
+        snips = (
+            Snip.objects.filter(
+                is_approved=True, visibility="public", author__is_active=True,
+                tags__name=cleaned,
+            )
+            .select_related("author")
+            .distinct()
+            .order_by("-timestamp")[:40]
+        )
+
+        return Response({
+            "tag": cleaned,
+            "videos": VideoSerializer(videos, many=True, context={"request": request}).data,
+            "snips": SnipSerializer(snips, many=True, context={"request": request}).data,
+        }, status=200)
+
 class IfModerator(APIView):
     permission_classes = [IsModerator]
 
@@ -771,10 +878,20 @@ class SetAccountActive(APIView):
     Moderator tool: deactivate or reactivate an account.
     Deactivated accounts still exist but their content is hidden
     everywhere and they can no longer authenticate.
+
+    Requires the ``mod.deactivate`` permission, so a title restricted to
+    content approval cannot touch account state.
     """
     permission_classes = [IsModerator]
 
     def post(self, request):
+        profile = getattr(request.user, "mediaprofile", None)
+        if not (request.user.is_superuser or (profile and profile.has_permission("mod.deactivate"))):
+            return Response(
+                {"error": "Your moderator title does not include account deactivation rights"},
+                status=403,
+            )
+
         account_id = request.data.get("id")
         active = request.data.get("active")
         if not account_id:
@@ -823,6 +940,156 @@ class SetAccountActive(APIView):
         return Response({
             "detail": "Account deactivated" if not user.is_active else "Account reactivated",
             "active": user.is_active,
+        }, status=200)
+
+
+class AdminPanel(APIView):
+    """Superuser overview: every title, the permission catalog, and stats."""
+
+    permission_classes = [IsSuperUser]
+
+    def get(self, request):
+        titles = [_title_payload(t) for t in UserTitle.objects.all()]
+        users = User.objects.select_related("mediaprofile").count()
+        videos = Video.objects.count()
+        snips = Snip.objects.count()
+        mod_count = MediaProfile.objects.filter(moderator=True).count()
+        return Response({
+            "titles": titles,
+            "permissions": ADMIN_PERMISSIONS,
+            "stats": {
+                "users": users,
+                "videos": videos,
+                "snips": snips,
+                "moderators": mod_count,
+            },
+        }, status=200)
+
+
+class AdminTitles(APIView):
+    """Create, edit and delete titles (name, color, symbol, permissions)."""
+
+    permission_classes = [IsSuperUser]
+
+    def get(self, request):
+        return Response([_title_payload(t) for t in UserTitle.objects.all()], status=200)
+
+    def post(self, request):
+        name = (request.data.get("name") or "").strip()
+        if not name:
+            return Response({"error": "Title name is required"}, status=400)
+        color = (request.data.get("color") or "#e11d48").strip()
+        symbol = (request.data.get("symbol") or "").strip()[:8]
+        permissions = request.data.get("permissions") or []
+        if isinstance(permissions, str):
+            permissions = [p.strip() for p in permissions.split(",") if p.strip()]
+        permissions = [p for p in permissions if p in {x["code"] for x in ADMIN_PERMISSIONS}]
+
+        title, created = UserTitle.objects.get_or_create(
+            name=name,
+            defaults={"color": color, "symbol": symbol, "permissions": permissions},
+        )
+        if not created:
+            return Response({"error": "A title with that name already exists"}, status=400)
+        return Response(_title_payload(title), status=201)
+
+    def put(self, request):
+        title_id = request.data.get("id")
+        if not title_id:
+            return Response({"error": "Title ID required"}, status=400)
+        try:
+            title = UserTitle.objects.get(id=title_id)
+        except UserTitle.DoesNotExist:
+            return Response({"error": "Title not found"}, status=404)
+
+        name = (request.data.get("name") or "").strip()
+        if name:
+            dup = UserTitle.objects.filter(name=name).exclude(id=title.id).exists()
+            if dup:
+                return Response({"error": "A title with that name already exists"}, status=400)
+            title.name = name
+        title.color = (request.data.get("color") or title.color).strip()
+        title.symbol = (request.data.get("symbol", title.symbol) or "").strip()[:8]
+        if "permissions" in request.data:
+            permissions = request.data.get("permissions") or []
+            if isinstance(permissions, str):
+                permissions = [p.strip() for p in permissions.split(",") if p.strip()]
+            title.permissions = [p for p in permissions if p in {x["code"] for x in ADMIN_PERMISSIONS}]
+        title.save()
+
+        # Re-sync every holder's legacy flags in case permissions changed.
+        for profile in title.holders.all():
+            _sync_legacy_title_flags(profile)
+        return Response(_title_payload(title), status=200)
+
+    def delete(self, request):
+        title_id = request.data.get("id")
+        if not title_id:
+            return Response({"error": "Title ID required"}, status=400)
+        try:
+            title = UserTitle.objects.get(id=title_id)
+        except UserTitle.DoesNotExist:
+            return Response({"error": "Title not found"}, status=404)
+        holders = list(title.holders.all())
+        title.delete()
+        for profile in holders:
+            _sync_legacy_title_flags(profile)
+        return Response({"detail": "Title deleted"}, status=200)
+
+
+class AdminUsers(APIView):
+    """Search users and grant/revoke titles."""
+
+    permission_classes = [IsSuperUser]
+
+    def get(self, request):
+        q = (request.query_params.get("q") or "").strip()
+        profiles = MediaProfile.objects.select_related("user").prefetch_related("titles")
+        if q:
+            profiles = profiles.filter(user__username__icontains=q)
+        data = []
+        for profile in profiles[:50]:
+            data.append({
+                "id": profile.id,
+                "user_id": profile.user.id,
+                "username": profile.user.username,
+                "active": profile.user.is_active,
+                "is_superuser": profile.user.is_superuser,
+                "titles": profile.title_payloads(),
+                "moderator": profile.is_moderator(),
+                "official": profile.is_official(),
+            })
+        return Response(data, status=200)
+
+    def post(self, request):
+        profile_id = request.data.get("id")
+        title_id = request.data.get("title_id")
+        grant = request.data.get("active", True)
+        if isinstance(grant, str):
+            grant = grant.strip().lower() in ("1", "true", "yes", "on")
+
+        if not profile_id or not title_id:
+            return Response({"error": "Both a profile id and a title id are required"}, status=400)
+        try:
+            profile = MediaProfile.objects.get(id=profile_id)
+        except MediaProfile.DoesNotExist:
+            return Response({"error": "Account not found"}, status=404)
+        try:
+            title = UserTitle.objects.get(id=title_id)
+        except UserTitle.DoesNotExist:
+            return Response({"error": "Title not found"}, status=404)
+
+        if grant:
+            profile.titles.add(title)
+        else:
+            profile.titles.remove(title)
+        _sync_legacy_title_flags(profile)
+        return Response({
+            "id": profile.id,
+            "username": profile.user.username,
+            "titles": profile.title_payloads(),
+            "moderator": profile.is_moderator(),
+            "official": profile.is_official(),
         }, status=200)
 
 
@@ -1059,6 +1326,7 @@ class UploadVideo(APIView):
 
         record_upload(request.user)
 
+        apply_tags(video_instance, video_instance.title, video_instance.description)
         serializer = VideoSerializer(video_instance, context={'request': request})
         return Response(serializer.data, status=201)
 
@@ -1378,6 +1646,7 @@ class UploadSnip(APIView):
             return Response({"message": "Upload failed. Please try again."}, status=500)
 
         record_upload(request.user)
+        apply_tags(snip, snip.title, snip.description)
         serializer = SnipSerializer(snip, context={"request": request})
 
         try:
