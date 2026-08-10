@@ -651,6 +651,27 @@ def fake_youtube_request(endpoint, params):
         return {"items": items}
     if endpoint == "videos":
         part = params.get("part", "")
+        if params.get("chart") == "mostPopular":
+            # The cheap default feed: no ``id`` param, just a chart.
+            items = []
+            for idx, vid in enumerate(VALID_YT_IDS):
+                item = {"id": vid, "snippet": {
+                    "title": f"Popular result {idx}",
+                    "description": "A description",
+                    "channelId": "UCfakechannel",
+                    "channelTitle": "Fake Channel",
+                    "publishedAt": "2024-01-01T00:00:00Z",
+                }}
+                if "contentDetails" in part:
+                    try:
+                        i = VALID_YT_IDS.index(vid)
+                    except ValueError:
+                        i = 0
+                    item["contentDetails"] = {"duration": "PT45S" if i == 0 else "PT6M"}
+                if "statistics" in part:
+                    item["statistics"] = {"viewCount": "12345"}
+                items.append(item)
+            return {"items": items}
         items = []
         for vid in (params.get("id") or "").split(","):
             if not vid:
@@ -677,11 +698,12 @@ def fake_youtube_request(endpoint, params):
             items.append(item)
         return {"items": items}
     if endpoint == "channels":
+        part = params.get("part", "")
         items = []
         for cid in (params.get("id") or "").split(","):
             if not cid:
                 continue
-            items.append({
+            item = {
                 "id": cid,
                 "snippet": {
                     "title": "Fake Channel",
@@ -696,6 +718,24 @@ def fake_youtube_request(endpoint, params):
                 },
                 "statistics": {"subscriberCount": "1000", "videoCount": "50", "viewCount": "9000"},
                 "brandingSettings": {"image": {"bannerImageUrl": "https://example.com/banner.jpg"}},
+            }
+            if "contentDetails" in part:
+                item["contentDetails"] = {"relatedPlaylists": {"uploads": "UUfakeuploadplaylist"}}
+            items.append(item)
+        return {"items": items}
+    if endpoint == "playlistItems":
+        items = []
+        for idx, vid in enumerate(VALID_YT_IDS):
+            items.append({
+                "id": f"playlistItem{idx}",
+                "snippet": {
+                    "channelId": "UCfakechannel",
+                    "channelTitle": "Fake Channel",
+                    "title": f"Upload {idx}",
+                    "description": "A description",
+                    "publishedAt": "2024-01-01T00:00:00Z",
+                    "resourceId": {"videoId": vid},
+                },
             })
         return {"items": items}
     if endpoint == "commentThreads":
@@ -727,6 +767,8 @@ def fake_youtube_request(endpoint, params):
 class LiveYouTubeMixin:
     def mock_api(self):
         youtube_module._cache.clear()
+        youtube_module._last_api_error = None
+        youtube_module._quota_blocked_until = 0.0
         patcher_key = mock.patch.object(youtube_module, "_api_key", return_value="test-key")
         patcher_req = mock.patch.object(youtube_module, "_youtube_request", side_effect=fake_youtube_request)
         patcher_key.start()
@@ -831,7 +873,7 @@ class LiveYouTubeFeedTests(LiveYouTubeMixin, TestCase):
 
     def test_quota_error_degrades_to_native_feed(self):
         def boom(*args, **kwargs):
-            raise Exception("quota exceeded")
+            return None
 
         with mock.patch.object(youtube_module, "_api_key", return_value="test-key"), \
              mock.patch.object(youtube_module, "_youtube_request", side_effect=boom):
@@ -839,6 +881,38 @@ class LiveYouTubeFeedTests(LiveYouTubeMixin, TestCase):
             resp = self.client.get("/media/guestgetvideo/")
         self.assertEqual(resp.status_code, 200)
         self.assertIn("native_survives", [v["title"] for v in resp.data["results"]])
+
+    def test_quota_error_is_surfaced_in_feed_payload(self):
+        def boom(*args, **kwargs):
+            youtube_module._record_api_error("search", 403, "quotaExceeded", "Quota exceeded")
+            return None
+
+        youtube_module._cache.clear()
+        youtube_module._last_api_error = None
+        youtube_module._quota_blocked_until = 0.0
+        with mock.patch.object(youtube_module, "_api_key", return_value="test-key"), \
+             mock.patch.object(youtube_module, "_youtube_request", side_effect=boom):
+            make_video(self.other, self.gaming, hours_old=1, title="native_status")
+            resp = self.client.get("/media/guestgetvideo/")
+        self.assertEqual(resp.status_code, 200)
+        self.assertIn("native_status", [v["title"] for v in resp.data["results"]])
+        err = resp.data.get("youtube_error")
+        self.assertIsNotNone(err)
+        self.assertEqual(err["reason"], "quotaExceeded")
+
+    def test_channel_videos_use_playlist_items_not_search(self):
+        self.mock_api()
+        calls = []
+
+        def recording(endpoint, params):
+            calls.append(endpoint)
+            return fake_youtube_request(endpoint, params)
+
+        with mock.patch.object(youtube_module, "_youtube_request", side_effect=recording):
+            items = youtube_module.youtube_channel_videos("UCabcdefghijklmnopqrstuv", limit=4)
+        self.assertGreater(len(items), 0)
+        self.assertNotIn("search", calls)
+        self.assertIn("playlistItems", calls)
 
 
 class LiveYouTubeWatchTests(LiveYouTubeMixin, TestCase):

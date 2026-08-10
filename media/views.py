@@ -23,7 +23,7 @@ from .youtube import (normalize_youtube_url, get_video_metadata, youtube_thumbna
                       youtube_channel_videos, validate_youtube_channel_id,
                       build_youtube_snips_feed, youtube_embed_url, youtube_system_user,
                       youtube_search_results, youtube_feed_item, _attach_youtube_enrichment,
-                      YOUTUBE_SYSTEM_USERNAME)
+                      youtube_api_status, YOUTUBE_SYSTEM_USERNAME)
 from .content import classify_content_type
 from .tags import apply_tags, extract_hashtags, tag_names_for
 import logging
@@ -401,13 +401,15 @@ def related_youtube_for(native_video, limit=6):
     """Live YouTube videos related to a native CreekTube video.
 
     Queries by the video's hashtags first (strongest signal), then its
-    category, so CreekTube and YouTube content cross-pollinate.
+    category, so CreekTube and YouTube content cross-pollinate. A single
+    query is used so the 100-unit search endpoint is never wasted on a low
+    yield page.
     """
     if native_video is None:
         return []
     tags = [t.name for t in native_video.tags.all()[:3]]
-    queries = tags[:2]
-    if native_video.category:
+    queries = tags[:1]
+    if not queries and native_video.category:
         queries.append(native_video.category.slug.replace("-", " "))
     items = []
     seen = set()
@@ -657,8 +659,8 @@ class LoginGetVideo(APIView):
                 "page": page,
                 "page_size": page_size,
                 "count": total,
+                "youtube_error": youtube_api_status(),
             }, status=200)
-
         user_interest = profile.categories
         user_tag_interests = profile.tags
         creeked_author_ids = set(
@@ -741,6 +743,7 @@ class LoginGetVideo(APIView):
             "page": page,
             "page_size": page_size,
             "count": len(combined),
+            "youtube_error": youtube_api_status(),
         }, status=200)
 
 
@@ -821,8 +824,8 @@ class GuestGetVideo(APIView):
                 "page": page,
                 "page_size": page_size,
                 "count": total,
+                "youtube_error": youtube_api_status(),
             }, status=200)
-
         approved_videos = (
             Video.objects.filter(is_approved=True, visibility="public", author__is_active=True)
             .exclude(source_type="YOUTUBE", author__username=YOUTUBE_SYSTEM_USERNAME)
@@ -866,6 +869,7 @@ class GuestGetVideo(APIView):
             "page": page,
             "page_size": page_size,
             "count": len(combined),
+            "youtube_error": youtube_api_status(),
         }, status=200)
 
 
@@ -1257,6 +1261,7 @@ class YouTubeChannel(APIView):
             'channel': channel,
             'videos': videos,
             'type': 'snips' if duration == 'short' else 'videos',
+            'youtube_error': youtube_api_status(),
         }, status=status.HTTP_200_OK)
 
 
@@ -1336,6 +1341,7 @@ class SearchVideo(APIView):
             "users": user_serializer.data,
             "youtube_videos": youtube_videos,
             "youtube_channels": youtube_channels,
+            "youtube_error": youtube_api_status(),
         }, status=status.HTTP_200_OK)
 
 
