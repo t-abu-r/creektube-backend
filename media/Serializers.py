@@ -2,6 +2,7 @@ from rest_framework import serializers
 from accounts.models import Profile
 import os
 from .models import *
+from .tags import tag_names_for
 from .youtube import YOUTUBE_SYSTEM_USERNAME
 
 
@@ -154,6 +155,7 @@ class SnipSerializer(serializers.ModelSerializer):
     source_type = serializers.SerializerMethodField()
     content_type = serializers.SerializerMethodField()
     duration = serializers.IntegerField(read_only=True)
+    tags = serializers.SerializerMethodField()
 
     class Meta:
         model = Snip
@@ -161,8 +163,11 @@ class SnipSerializer(serializers.ModelSerializer):
             "id", "title", "description", "video", "thumbnail", "visibility", "timestamp",
             "is_approved", "author", "author_id", "author_avatar", "author_active",
             "view_count", "like_count", "is_liked",
-            "source_type", "content_type", "duration",
+            "source_type", "content_type", "duration", "tags",
         ]
+
+    def get_tags(self, obj):
+        return tag_names_for(obj)
 
     def get_author_active(self, obj):
         return obj.author.is_active
@@ -227,6 +232,7 @@ class VideoSerializer(serializers.ModelSerializer):
     embed_url = serializers.SerializerMethodField()
     content_type = serializers.CharField(read_only=True)
     duration = serializers.IntegerField(read_only=True)
+    tags = serializers.SerializerMethodField()
 
     class Meta:
         model = Video
@@ -234,8 +240,11 @@ class VideoSerializer(serializers.ModelSerializer):
             "id", "category", "category_name", "title", "description", "thumbnail", "video", "visibility",
             "timestamp", "is_approved", "author", "author_id", "author_avatar", "author_active",
             "comments", "view_count", "source_type", "youtube_video_id", "youtube_channel_id",
-            "youtube_channel_name", "embed_url", "content_type", "duration",
+            "youtube_channel_name", "embed_url", "content_type", "duration", "tags",
         ]
+
+    def get_tags(self, obj):
+        return tag_names_for(obj)
 
     def get_author_active(self, obj):
         return obj.author.is_active

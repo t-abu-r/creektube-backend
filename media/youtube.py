@@ -20,6 +20,7 @@ from django.utils import timezone
 
 from .content import classify_content_type, SNIP, VIDEO
 from .models import Like, Video
+from .tags import extract_hashtags
 
 logger = logging.getLogger(__name__)
 
@@ -208,21 +209,28 @@ def _category_to_query(category_slug):
     return category_slug.replace("-", " ").strip()
 
 
-def _feed_queries_for(user, interest_categories=None, feed="following", history_keywords=None):
+def _feed_queries_for(user, interest_categories=None, feed="following", history_keywords=None, tag_queries=None):
     """Build the list of YouTube search queries for a feed request.
 
-    Logged-in users get queries from their strongest interests (category
-    slugs the profile has actually engaged with). Recent ``history_keywords``
-    are folded in for discovery. Everyone else gets the default topic pool.
+    Learned ``tag_queries`` rank first (a specific person/artist beats the
+    generic category), then the strongest interest categories, then recent
+    ``history_keywords`` for discovery. Everyone else gets the default pool.
     """
     queries = []
+    for tag in (tag_queries or [])[:3]:
+        tag = (tag or "").strip().lstrip("#")
+        if tag and tag not in queries:
+            queries.append(tag)
     if interest_categories:
         ranked_cats = sorted(
             ((slug, score) for slug, score in interest_categories.items() if score > 0),
             key=lambda pair: pair[1],
             reverse=True,
         )
-        queries = [_category_to_query(slug) for slug, _ in ranked_cats[:4]]
+        for slug, _ in ranked_cats[:4]:
+            query = _category_to_query(slug)
+            if query and query not in queries:
+                queries.append(query)
     for keyword in (history_keywords or [])[:3]:
         keyword = (keyword or "").strip()
         if keyword and keyword not in queries:
@@ -556,22 +564,24 @@ def youtube_feed_item(item, category_slug="", category_name="", view_count=None,
         "youtube_channel_id": (snippet.get("channelId") or "").strip(),
         "youtube_channel_name": (snippet.get("channelTitle") or "").strip(),
         "embed_url": youtube_embed_url(video_id),
+        "tags": extract_hashtags(snippet.get("title"), snippet.get("description")),
     }
 
 
-def build_youtube_feed(user=None, interest_categories=None, limit=FEED_TOTAL_ITEMS, feed=None, history_keywords=None):
+def build_youtube_feed(user=None, interest_categories=None, limit=FEED_TOTAL_ITEMS, feed=None, history_keywords=None, tag_queries=None):
     """Build a list of live YouTube feed items.
 
     ``user`` may be None (guest). Interests come from the user's MediaProfile
-    categories (``{category_slug: score}``). ``history_keywords`` (a list of
-    recent search/history terms) are mixed in for discovery. Returns an empty
-    list whenever the API key is missing or the calls fail, so the native
-    feed is never harmed.
+    categories (``{category_slug: score}``). ``tag_queries`` (learned hashtags)
+    are queried first because tags outrank categories. ``history_keywords`` (a
+    list of recent search/history terms) are mixed in for discovery. Returns
+    an empty list whenever the API key is missing or the calls fail, so the
+    native feed is never harmed.
     """
     if not _api_key() or limit <= 0:
         return []
 
-    queries = _feed_queries_for(user, interest_categories, feed=feed, history_keywords=history_keywords)
+    queries = _feed_queries_for(user, interest_categories, feed=feed, history_keywords=history_keywords, tag_queries=tag_queries)
     items = []
     seen_ids = set()
     for query in queries:
@@ -598,7 +608,7 @@ def build_youtube_feed(user=None, interest_categories=None, limit=FEED_TOTAL_ITE
     return items
 
 
-def build_youtube_snips_feed(user=None, interest_categories=None, limit=FEED_TOTAL_ITEMS, feed=None, history_keywords=None):
+def build_youtube_snips_feed(user=None, interest_categories=None, limit=FEED_TOTAL_ITEMS, feed=None, history_keywords=None, tag_queries=None):
     """Build a list of live YouTube Shorts for the Snips feed.
 
     Same shape as ``build_youtube_feed`` but the search restricts to short
@@ -609,7 +619,7 @@ def build_youtube_snips_feed(user=None, interest_categories=None, limit=FEED_TOT
     if not _api_key() or limit <= 0:
         return []
 
-    queries = _feed_queries_for(user, interest_categories, feed=feed, history_keywords=history_keywords)
+    queries = _feed_queries_for(user, interest_categories, feed=feed, history_keywords=history_keywords, tag_queries=tag_queries)
     items = []
     seen_ids = set()
     for query in queries:

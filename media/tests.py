@@ -9,7 +9,8 @@ from rest_framework.test import APIClient
 
 from . import ranking
 from .models import (CategoryVideo, Comment, Creek, DisPike, Like, MediaProfile,
-                     Snip, Video, WatchEvent, UploadRateLimit)
+                     Snip, Video, WatchEvent, UploadRateLimit, UserTitle,
+                     YouTubeChannelFollow)
 from . import youtube as youtube_module
 from .youtube import (normalize_youtube_url, validate_youtube_id,
                       youtube_embed_url, youtube_thumbnail_url, get_video_metadata,
@@ -1143,4 +1144,232 @@ class RecentWatchKeywordTests(TestCase):
             recent_watch_keywords(self.user),
             ["the neighbourhood", "sweater weather"],
         )
+
+
+# ---------------------------------------------------------------------------
+# Hashtag tags: extraction, learning, ranking, interest page
+# ---------------------------------------------------------------------------
+class TagFeatureTests(TestCase):
+    def setUp(self):
+        self.client = APIClient()
+        self.user = User.objects.create_user(username="tag_user", password="pw")
+        self.other = User.objects.create_user(username="tag_author", password="pw")
+        self.music = CategoryVideo.objects.create(name="Music", slug="music")
+
+    def test_extract_hashtags_normalizes_and_dedupes(self):
+        from .tags import extract_hashtags
+        self.assertEqual(
+            extract_hashtags("Set Fire #Music #Music #theneighbourhood", "desc #Gaming"),
+            ["music", "theneighbourhood", "gaming"],
+        )
+
+    def test_apply_tags_from_title_and_description(self):
+        from .tags import apply_tags, tag_names_for
+        video = make_video(self.other, self.music, title="My Song #Music #theneighbourhood")
+        video.description = "#concert"
+        video.save()
+        apply_tags(video, video.title, video.description)
+        self.assertEqual(set(tag_names_for(video)), {"music", "theneighbourhood", "concert"})
+
+    def test_watch_learns_tag_interests(self):
+        from .tags import apply_tags
+        from .views import record_tag_interest_from_watch
+        video = make_video(self.other, self.music, title="Song #theneighbourhood")
+        apply_tags(video, video.title, video.description)
+        record_tag_interest_from_watch(self.user, video=video)
+        profile = MediaProfile.objects.get(user=self.user)
+        self.assertGreaterEqual(profile.tags.get("theneighbourhood", 0), 1)
+
+    def test_tag_affinity_outranks_no_match(self):
+        from .ranking import tag_affinity
+        self.assertGreater(
+            tag_affinity(["theneighbourhood"], {"theneighbourhood": 10}),
+            tag_affinity(["someotherband"], {"theneighbourhood": 10}),
+        )
+
+    def test_interest_tag_page_returns_videos_and_snips(self):
+        from .tags import apply_tags
+        video = make_video(self.other, self.music, title="Song #music")
+        apply_tags(video, video.title, video.description)
+        snip = Snip.objects.create(
+            author=self.other, category=self.music, title="Clip #music",
+            description="d", is_approved=True, visibility="public",
+        )
+        apply_tags(snip, snip.title, snip.description)
+        resp = self.client.get("/media/interests/music/")
+        self.assertEqual(resp.status_code, 200)
+        self.assertEqual(resp.data["tag"], "music")
+        self.assertEqual(len(resp.data["videos"]), 1)
+        self.assertEqual(len(resp.data["snips"]), 1)
+
+    def test_following_feed_does_not_need_tags(self):
+        # Sanity: LoginGetVideo without any tags still returns 200.
+        self.client.force_authenticate(user=self.user)
+        resp = self.client.get("/media/logingetvideo/")
+        self.assertEqual(resp.status_code, 200)
+
+
+# ---------------------------------------------------------------------------
+# Superuser title panel + restricted moderator permissions
+# ---------------------------------------------------------------------------
+class AdminTitleTests(TestCase):
+    def setUp(self):
+        self.client = APIClient()
+        self.admin = User.objects.create_user(username="root", password="pw", is_superuser=True)
+        self.mod_user = User.objects.create_user(username="moddy", password="pw")
+        self.victim = User.objects.create_user(username="victim", password="pw")
+        self.mod_profile = MediaProfile.objects.create(user=self.mod_user)
+        self.victim_profile = MediaProfile.objects.create(user=self.victim)
+        self.music = CategoryVideo.objects.create(name="Music", slug="music")
+
+    def test_superuser_creates_and_grants_title(self):
+        self.client.force_authenticate(user=self.admin)
+        resp = self.client.post(
+            "/media/admin-titles/",
+            {"name": "Approver", "color": "#00ff00", "symbol": "S",
+             "permissions": ["mod.approve", "bogus.perm"]},
+            format="json",
+        )
+        self.assertEqual(resp.status_code, 201)
+        self.assertEqual(resp.data["permissions"], ["mod.approve"])
+
+        grant = self.client.post(
+            "/media/admin-users/",
+            {"id": self.mod_profile.id, "title_id": resp.data["id"], "active": True},
+            format="json",
+        )
+        self.assertEqual(grant.status_code, 200)
+        self.mod_profile.refresh_from_db()
+        self.assertTrue(self.mod_profile.is_moderator())
+        self.assertTrue(self.mod_profile.has_permission("mod.approve"))
+        self.assertFalse(self.mod_profile.has_permission("mod.deactivate"))
+
+    def test_restricted_mod_cannot_deactivate_accounts(self):
+        title = UserTitle.objects.create(
+            name="Approver", color="#0f0", symbol="A", permissions=["mod.approve"]
+        )
+        self.mod_profile.titles.add(title)
+        self.mod_profile.refresh_from_db()
+        self.client.force_authenticate(user=self.mod_user)
+        resp = self.client.post(
+            "/media/set-account-active/",
+            {"id": self.victim_profile.id, "active": False, "reason": "x"},
+        )
+        self.assertEqual(resp.status_code, 403)
+
+    def test_restricted_mod_cannot_view_admin_panel(self):
+        title = UserTitle.objects.create(
+            name="Approver", color="#0f0", symbol="A", permissions=["mod.approve"]
+        )
+        self.mod_profile.titles.add(title)
+        self.client.force_authenticate(user=self.mod_user)
+        self.assertEqual(self.client.get("/media/admin-panel/").status_code, 403)
+
+    def test_anonymous_cannot_create_titles(self):
+        resp = self.client.post("/media/admin-titles/", {"name": "Rogue", "permissions": []})
+        self.assertIn(resp.status_code, (401, 403))
+
+
+# ---------------------------------------------------------------------------
+# YouTube channel creeks (read-only subscriptions)
+# ---------------------------------------------------------------------------
+class YouTubeFollowTests(TestCase):
+    def setUp(self):
+        self.client = APIClient()
+        self.user = User.objects.create_user(username="follow_user", password="pw")
+        self.client.force_authenticate(user=self.user)
+
+    def test_creek_channel_toggle_and_list(self):
+        payload = {
+            "channel_id": "UCabcdefghijklmnopqrstuv",
+            "channel_name": "Fake Channel",
+            "channel_thumbnail": "http://thumb/1.jpg",
+            "channel_handle": "@fakechannel",
+        }
+        resp = self.client.post("/media/creek-youtube-channel/", payload)
+        self.assertEqual(resp.status_code, 201)
+        self.assertTrue(resp.data["creek"])
+        self.assertEqual(
+            YouTubeChannelFollow.objects.filter(user=self.user, channel_id=payload["channel_id"]).count(), 1
+        )
+
+        follows = self.client.get("/media/youtube-follows/")
+        self.assertEqual(follows.status_code, 200)
+        self.assertEqual(len(follows.data), 1)
+        self.assertEqual(follows.data[0]["channel_name"], "Fake Channel")
+        self.assertEqual(follows.data[0]["channel_handle"], "fakechannel")
+
+        resp = self.client.post("/media/creek-youtube-channel/", {"channel_id": payload["channel_id"]})
+        self.assertEqual(resp.data["creek"], False)
+        self.assertEqual(YouTubeChannelFollow.objects.filter(user=self.user).count(), 0)
+
+    def test_creek_rejects_invalid_channel_id(self):
+        resp = self.client.post("/media/creek-youtube-channel/", {"channel_id": "not-valid"})
+        self.assertEqual(resp.status_code, 400)
+
+    def test_following_feed_mixes_followed_channel_videos(self):
+        from . import views as views_module
+        author = User.objects.create_user(username="creator_a", password="pw")
+        cat = CategoryVideo.objects.create(name="Music", slug="music")
+        make_video(author, cat, is_approved=True, title="native")
+        Creek.objects.create(author=self.user, account=MediaProfile.objects.get_or_create(user=author)[0])
+        YouTubeChannelFollow.objects.create(
+            user=self.user, channel_id="UCabcdefghijklmnopqrstuv", channel_name="Fake Channel",
+        )
+        fake_yt = {"id": "yt1", "source_type": "YOUTUBE", "title": "YT upload",
+                   "thumbnail": "http://thumb/yt.jpg", "author": "Fake Channel",
+                   "category": "music", "category_name": "Music",
+                   "timestamp": "2024-01-01T00:00:00Z"}
+        with mock.patch.object(views_module, "build_youtube_feed", return_value=[]), \
+             mock.patch.object(views_module, "youtube_channel_videos", return_value=[fake_yt]):
+            resp = self.client.get("/media/logingetvideo/?feed=following")
+        self.assertEqual(resp.status_code, 200)
+        ids = [v["id"] for v in resp.data["results"]]
+        self.assertIn("yt1", ids)
+        self.assertTrue(any(v["source_type"] == "YOUTUBE" for v in resp.data["results"]))
+
+
+# ---------------------------------------------------------------------------
+# Cross-source related videos (native <-> YouTube)
+# ---------------------------------------------------------------------------
+class CrossSourceRelatedTests(TestCase):
+    def setUp(self):
+        self.user = User.objects.create_user(username="rel_user", password="pw")
+        self.other = User.objects.create_user(username="rel_author", password="pw")
+        self.music = CategoryVideo.objects.create(name="Music", slug="music")
+
+    def test_native_video_mixes_youtube_related(self):
+        from . import views as views_module
+        from .tags import apply_tags
+        video = make_video(self.other, self.music, title="Native #theneighbourhood")
+        apply_tags(video, video.title, video.description)
+        fake_yt = {"id": "yt1", "source_type": "YOUTUBE", "title": "YT",
+                   "thumbnail": "", "author": "Ch", "category": "music",
+                   "category_name": "Music", "timestamp": "2024-01-01T00:00:00Z"}
+        with mock.patch.object(views_module, "youtube_search_results", return_value=[{}]), \
+             mock.patch.object(views_module, "youtube_feed_item", return_value=fake_yt), \
+             mock.patch.object(views_module, "_attach_youtube_enrichment"):
+            related = views_module.related_youtube_for(video, limit=4)
+        self.assertEqual([r["id"] for r in related], ["yt1"])
+
+    def test_mixed_related_serializes_native_rows(self):
+        from . import views as views_module
+        from rest_framework.test import APIRequestFactory
+        video = make_video(self.other, self.music, title="Native")
+        req = APIRequestFactory().get("/")
+        related = views_module.mixed_related_videos([video], [], req)
+        self.assertEqual(len(related), 1)
+        self.assertEqual(related[0]["id"], video.pk)
+        self.assertEqual(related[0]["source_type"], "CREEKTUBE")
+
+    def test_youtube_row_gets_native_related(self):
+        from . import views as views_module
+        native = make_video(self.other, self.music, title="Native")
+        yt = Video.objects.create(
+            author=self.other, category=self.music, title="YT",
+            description="", is_approved=True, source_type="YOUTUBE",
+            youtube_video_id="dQw4w9WgXcQ",
+        )
+        related = views_module.related_native_for(yt, limit=6)
+        self.assertEqual([v.id for v in related], [native.id])
 

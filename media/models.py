@@ -15,15 +15,96 @@ class CategoryVideo(models.Model):
         return self.videos.count() + self.snips.count()
 
 
+class Tag(models.Model):
+    """A community hashtag (`#music`, `#theneighbourhood`).
+
+    Tags are extracted from titles and descriptions wherever they appear, and
+    users can search/follow them via `/interests/<tag>`. Tag interest beats
+    category interest in the ranking algorithm.
+    """
+
+    name = models.CharField(max_length=50, unique=True)
+
+    def save(self, *args, **kwargs):
+        self.name = (self.name or "").strip().lstrip("#").lower()
+        super().save(*args, **kwargs)
+
+    def __str__(self):
+        return f"#{self.name}"
+
+
+class UserTitle(models.Model):
+    """A grantable title with its own color, symbol and permission set.
+
+    Superusers mint titles (e.g. "Moderator", "Official") and hand them out.
+    Each title carries explicit permissions so a moderator can be restricted
+    to content approval without account-deactivation rights.
+    """
+
+    name = models.CharField(max_length=50, unique=True)
+    color = models.CharField(max_length=9, default="#e11d48")
+    symbol = models.CharField(max_length=8, blank=True, default="")
+    permissions = models.JSONField(default=list, blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ["name"]
+
+    def __str__(self):
+        return self.name
+
+    def has_permission(self, permission):
+        return permission in (self.permissions or [])
+
+
 class MediaProfile(models.Model):
     user = models.OneToOneField(User, on_delete=models.CASCADE)
     categories = models.JSONField(default=dict)
+    tags = models.JSONField(default=dict)
+    titles = models.ManyToManyField(UserTitle, blank=True, related_name="holders")
     moderator = models.BooleanField(default=False)
     official = models.BooleanField(default=False)
     banner = models.ImageField(upload_to='banners/', blank=True, null=True)
 
     def __str__(self):
         return self.user.username
+
+    def granted_permissions(self):
+        perms = set()
+        for title in self.titles.all():
+            perms.update(title.permissions or [])
+        return perms
+
+    def has_permission(self, permission):
+        if self.user.is_superuser:
+            return True
+        return permission in self.granted_permissions()
+
+    def is_moderator(self):
+        if self.user.is_superuser:
+            return True
+        return self.moderator or any(
+            p.startswith("mod.") for p in self.granted_permissions()
+        )
+
+    def is_official(self):
+        if self.user.is_superuser:
+            return True
+        return self.official or any(
+            p == "official.badge" for p in self.granted_permissions()
+        )
+
+    def title_payloads(self):
+        return [
+            {
+                "id": title.pk,
+                "name": title.name,
+                "color": title.color,
+                "symbol": title.symbol,
+                "permissions": title.permissions or [],
+            }
+            for title in self.titles.all()
+        ]
 
 
 class ModActionLog(models.Model):
@@ -84,6 +165,7 @@ class Video(models.Model):
     timestamp = models.DateTimeField(default=timezone.now)
     is_approved = models.BooleanField(default=False)
     view_count = models.PositiveIntegerField(default=0)
+    tags = models.ManyToManyField(Tag, blank=True, related_name="videos")
 
     def __str__(self):
         return self.title
@@ -116,6 +198,7 @@ class Snip(models.Model):
         on_delete=models.SET_NULL,
         related_name="snips",
     )
+    tags = models.ManyToManyField(Tag, blank=True, related_name="snips")
 
     class Meta:
         ordering = ['-timestamp']
@@ -185,6 +268,28 @@ class Creek(models.Model):
 
     def __str__(self):
         return f"{self.author.username} Creeked {self.account.username}"
+
+
+class YouTubeChannelFollow(models.Model):
+    """A CreekTube user "creeking" a YouTube channel.
+
+    YouTube channels are followed by channel ID. They surface in the
+    following feed (read-only) alongside CreekTube creators the user creeks.
+    """
+
+    user = models.ForeignKey(User, on_delete=models.CASCADE, related_name="youtube_channel_follows")
+    channel_id = models.CharField(max_length=64)
+    channel_name = models.CharField(max_length=255, default="")
+    channel_thumbnail = models.TextField(blank=True, default="")
+    channel_handle = models.CharField(max_length=255, blank=True, default="")
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        unique_together = ["user", "channel_id"]
+        ordering = ["-created_at"]
+
+    def __str__(self):
+        return f"{self.user.username} creeks {self.channel_name or self.channel_id}"
 
 
 class WatchEvent(models.Model):

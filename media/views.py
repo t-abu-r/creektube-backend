@@ -6,12 +6,12 @@ from rest_framework.response import Response
 from rest_framework.status import HTTP_400_BAD_REQUEST
 from rest_framework.views import APIView
 from django.utils import timezone
-from .permissions import IsModerator
+from .permissions import IsModerator, IsSuperUser
 from .Serializers import *
 from accounts.serializers import ProfileSerializer
 from .models import (Video, Comment, CommentLike, CategoryVideo, MediaProfile, Like,
                      DisPike, Creek, WatchEvent, UploadRateLimit, Notification, Snip, SnipLike,
-                     ModActionLog)
+                     ModActionLog, UserTitle, YouTubeChannelFollow, Tag)
 from django.db.models import Count, Q, Sum, Avg, F, Max
 from django.db import IntegrityError
 from . import ranking
@@ -22,8 +22,10 @@ from .youtube import (normalize_youtube_url, get_video_metadata, youtube_thumbna
                       youtube_comments, youtube_like_counts_for, youtube_channel,
                       youtube_channel_videos, validate_youtube_channel_id,
                       build_youtube_snips_feed, youtube_embed_url, youtube_system_user,
+                      youtube_search_results, youtube_feed_item, _attach_youtube_enrichment,
                       YOUTUBE_SYSTEM_USERNAME)
 from .content import classify_content_type
+from .tags import apply_tags, extract_hashtags, tag_names_for
 import logging
 import re
 from django.db.models.functions import TruncDate
@@ -43,6 +45,35 @@ VIEW_GAP = timedelta(minutes=2)  # min time between views from same user on same
 VIEW_MAX_PER_USER = 6  # max views per user per video/snip
 COMMENT_SPAM_LIMIT = 6  # max comments per video
 COMMENT_SPAM_WINDOW = timedelta(minutes=2)
+
+# ---------------------------------------------------------------------------
+# Admin titles: the permission catalog that titles can carry.
+# ---------------------------------------------------------------------------
+ADMIN_PERMISSIONS = [
+    {"code": "mod.approve", "label": "Approve / reject videos & snips"},
+    {"code": "mod.deactivate", "label": "Deactivate / reactivate accounts"},
+    {"code": "mod.view_logs", "label": "View moderation logs"},
+    {"code": "official.badge", "label": "Official account badge"},
+]
+
+
+def _sync_legacy_title_flags(profile):
+    """Keep the legacy ``moderator``/``official`` booleans in sync with titles."""
+    perms = profile.granted_permissions()
+    profile.moderator = bool(perms & {"mod.approve", "mod.deactivate", "mod.view_logs"})
+    profile.official = "official.badge" in perms
+    profile.save(update_fields=["moderator", "official"])
+
+
+def _title_payload(title):
+    return {
+        "id": title.pk,
+        "name": title.name,
+        "color": title.color,
+        "symbol": title.symbol,
+        "permissions": title.permissions or [],
+        "holder_count": title.holders.count(),
+    }
 
 
 def check_upload_rate_limit(user):
@@ -152,6 +183,32 @@ def record_category_interest(user, category_slug, boost=ranking.WATCH_BOOST):
     profile.save()
 
 
+def record_tag_interest(user, tag_names, boost=ranking.TAG_BOOST):
+    """Boost a user's tag-interest scores for ``tag_names`` after a watch.
+
+    Tag interests outrank category interests in the feed, so a Music viewer
+    who watches a specific artist (#theneighbourhood) keeps seeing that artist
+    on top of the generic Music bucket.
+    """
+    if not user or not user.is_authenticated:
+        return
+    names = [n for n in (tag_names or []) if n]
+    if not names:
+        return
+    profile, _ = MediaProfile.objects.get_or_create(user=user)
+    for name in names:
+        profile.tags = ranking.adjust_tag_score(profile.tags, name, boost)
+    profile.save()
+
+
+def record_tag_interest_from_watch(user, video=None, snip=None):
+    """Learn tag interests from a just-watched video/snip."""
+    if video is not None:
+        record_tag_interest(user, tag_names_for(video))
+    elif snip is not None:
+        record_tag_interest(user, tag_names_for(snip))
+
+
 def boost_youtube_watch_interest(user, video):
     """Learn the YouTube category for a stored but uncategorized YouTube row."""
     if not video or video.source_type != "YOUTUBE" or not video.youtube_video_id:
@@ -194,7 +251,7 @@ def ensure_youtube_video(video_id, user=None):
     else:
         timestamp = timezone.now()
     try:
-        return Video.objects.create(
+        video = Video.objects.create(
             author=youtube_system_user(),
             category=category,
             title=metadata.get("title") or details.get("title") or "YouTube video",
@@ -214,6 +271,8 @@ def ensure_youtube_video(video_id, user=None):
     except Exception as exc:
         logger.warning("ensure_youtube_video failed for %s: %s", video_id, exc)
         return None
+    apply_tags(video, video.title, video.description)
+    return video
 
 
 def youtube_snip_like_state(request, video_id):
@@ -240,6 +299,85 @@ def youtube_snip_like_state(request, video_id):
 # Hybrid feed mixing (CreekTube + YouTube)
 # ---------------------------
 HYBRID_YOUTUBE_RATIO = 4  # 1 YouTube item every 4 slots
+HYBRID_YOUTUBE_DEFAULT_FRACTION = 0.25
+HYBRID_YOUTUBE_MIN_FRACTION = 0.16
+HYBRID_YOUTUBE_MAX_RATIO = 6
+
+
+def recent_type_mix(user, window=40):
+    """Fraction (0..1) of a user's recent watches that were YouTube.
+
+    Drives the adaptive blend: the more of one type the user watches, the
+    more of it appears on top — while the interleaver still guarantees the
+    other type never disappears entirely.
+    """
+    if not user or not user.is_authenticated:
+        return HYBRID_YOUTUBE_DEFAULT_FRACTION
+    recent = list(
+        WatchEvent.objects.filter(user=user, video__isnull=False)
+        .select_related("video")
+        .order_by("-timestamp")[:window]
+    )
+    if not recent:
+        return HYBRID_YOUTUBE_DEFAULT_FRACTION
+    youtube = sum(1 for event in recent if event.video.source_type == "YOUTUBE")
+    fraction = youtube / len(recent)
+    # Never fully exclude either type from the feed.
+    return min(0.6, max(HYBRID_YOUTUBE_MIN_FRACTION, fraction))
+
+
+def adaptive_youtube_ratio(user):
+    """Native slots per YouTube slot, adapted to the user's watch mix."""
+    fraction = recent_type_mix(user)
+    if fraction <= 0:
+        return HYBRID_YOUTUBE_RATIO
+    ratio = int(round(1 / fraction))
+    return max(1, min(HYBRID_YOUTUBE_MAX_RATIO, ratio))
+
+
+def build_youtube_follows_feed(user, limit=20, shorts=False):
+    """Live YouTube videos from channels the user creeks (read-only).
+
+    Only works when the YouTube API key is configured; otherwise returns an
+    empty list so the following feed keeps working with Creektube creators.
+    """
+    if not user or not user.is_authenticated:
+        return []
+    follows = list(YouTubeChannelFollow.objects.filter(user=user)[:20])
+    if not follows:
+        return []
+    items = []
+    seen = set()
+    for follow in follows:
+        for item in youtube_channel_videos(follow.channel_id, limit=5, duration="short" if shorts else "any"):
+            if item["id"] in seen:
+                continue
+            seen.add(item["id"])
+            items.append(item)
+        if len(items) >= limit:
+            break
+    return items[:limit]
+
+
+def interleave_feed(native_items, youtube_items, ratio=HYBRID_YOUTUBE_RATIO):
+    """Blend native and live-YouTube items into a single ordered list.
+
+    Every ``ratio`` positions a YouTube item is inserted between native
+    items, so the mixed feed reads naturally and neither source type can
+    disappear. Either input may be empty.
+    """
+    combined = []
+    ct_idx = 0
+    yt_idx = 0
+    while ct_idx < len(native_items) or yt_idx < len(youtube_items):
+        for _ in range(ratio):
+            if ct_idx < len(native_items):
+                combined.append(native_items[ct_idx])
+                ct_idx += 1
+        if yt_idx < len(youtube_items):
+            combined.append(youtube_items[yt_idx])
+            yt_idx += 1
+    return combined
 
 
 def resolve_video_by_id(video_id, queryset):
@@ -259,24 +397,82 @@ def resolve_video_by_id(video_id, queryset):
     return video
 
 
-def interleave_feed(native_items, youtube_items, ratio=HYBRID_YOUTUBE_RATIO):
-    """Blend native and live-YouTube items into a single ordered list.
+def related_youtube_for(native_video, limit=6):
+    """Live YouTube videos related to a native CreekTube video.
 
-    Every ``ratio`` positions a YouTube item is inserted between native
-    items, so the mixed feed reads naturally. Either input may be empty.
+    Queries by the video's hashtags first (strongest signal), then its
+    category, so CreekTube and YouTube content cross-pollinate.
     """
+    if native_video is None:
+        return []
+    tags = [t.name for t in native_video.tags.all()[:3]]
+    queries = tags[:2]
+    if native_video.category:
+        queries.append(native_video.category.slug.replace("-", " "))
+    items = []
+    seen = set()
+    for query in queries:
+        for raw in youtube_search_results(query, max_results=limit + 2):
+            item = youtube_feed_item(raw)
+            if not item or item["id"] in seen:
+                continue
+            seen.add(item["id"])
+            items.append(item)
+        if len(items) >= limit:
+            break
+    if items:
+        _attach_youtube_enrichment(items)
+    return items[:limit]
+
+
+def related_native_for(video, category_hint=None, limit=6):
+    """Native CreekTube videos related to a (possibly live) YouTube video.
+
+    Matches the materialized row's tags first, then category; ``category_hint``
+    is used for live YouTube videos that have no stored row yet.
+    """
+    qs = (
+        Video.objects.filter(is_approved=True, visibility="public", author__is_active=True)
+        .exclude(source_type="YOUTUBE", author__username=YOUTUBE_SYSTEM_USERNAME)
+    )
+    tag_ids = [t.id for t in video.tags.all()[:3]] if video is not None else []
+    if tag_ids:
+        matched = list(
+            qs.filter(tags__in=tag_ids)
+            .exclude(id=video.id)
+            .distinct()
+            .order_by("-timestamp")[:limit]
+        )
+        if matched:
+            return matched
+    category_slug = (
+        video.category.slug if video is not None and video.category else category_hint
+    )
+    if category_slug:
+        return list(
+            qs.filter(category__slug=category_slug)
+            .exclude(id=video.id if video is not None else -1)
+            .order_by("-timestamp")[:limit]
+        )
+    return []
+
+
+def mixed_related_videos(native_items, youtube_items, request):
+    """Serialize a mixed related list (Video objects + YouTube dicts)."""
+    objects = [item for item in native_items if isinstance(item, Video)]
+    object_data = {}
+    if objects:
+        serializer = VideoSerializer(objects, many=True, context={"request": request})
+        object_data = {obj.id: data for obj, data in zip(objects, serializer.data)}
     combined = []
-    ct_idx = 0
-    yt_idx = 0
-    while ct_idx < len(native_items) or yt_idx < len(youtube_items):
-        for _ in range(ratio):
-            if ct_idx < len(native_items):
-                combined.append(native_items[ct_idx])
-                ct_idx += 1
-        if yt_idx < len(youtube_items):
-            combined.append(youtube_items[yt_idx])
-            yt_idx += 1
-    return combined
+    for item in native_items + youtube_items:
+        if isinstance(item, Video):
+            data = object_data.get(item.id)
+        else:
+            data = item
+        if data:
+            combined.append(data)
+    return combined[:12]
 
 
 def serialize_mixed_items(items, request):
@@ -464,6 +660,7 @@ class LoginGetVideo(APIView):
             }, status=200)
 
         user_interest = profile.categories
+        user_tag_interests = profile.tags
         creeked_author_ids = set(
             Creek.objects.filter(author=request.user)
             .exclude(account__user__is_active=False)
@@ -476,6 +673,7 @@ class LoginGetVideo(APIView):
             # live YouTube items already carry that content into the feed.
             .exclude(source_type="YOUTUBE", author__username=YOUTUBE_SYSTEM_USERNAME)
             .select_related('category')
+            .prefetch_related('tags')
             .annotate(
                 num_likes=Count('likes', distinct=True),
                 num_dislikes=Count('dispikes', distinct=True),
@@ -499,9 +697,16 @@ class LoginGetVideo(APIView):
         candidate_ids = [v.id for v in candidates]
         cowatch_map = ranking.build_cowatch_map(user_recent_ids, candidate_ids) if user_recent_ids else {}
 
+        # Tag interests outrank categories, so pass the per-video tag map to
+        # the ranker (tags are prefetched above, no extra queries).
+        video_tag_map = {
+            v.id: [t.name for t in v.tags.all()]
+            for v in candidates
+        }
         ranked = ranking.rank_videos(
             candidates, user_interest, creeked_author_ids,
             cowatch_map=cowatch_map, user_recent_video_ids=user_recent_ids,
+            user_tag_interests=user_tag_interests, video_tag_map=video_tag_map,
         )
 
         try:
@@ -518,8 +723,15 @@ class LoginGetVideo(APIView):
             interest_categories=user_interest,
             feed=feed,
             history_keywords=recent_watch_keywords(request.user),
+            tag_queries=list(user_tag_interests.keys()),
         )
-        combined = interleave_feed(ranked, youtube_items)
+        if feed == 'following':
+            # Followed YouTube channels surface in the same following feed.
+            youtube_items = build_youtube_follows_feed(request.user, limit=20) + youtube_items
+        combined = interleave_feed(
+            ranked, youtube_items,
+            ratio=adaptive_youtube_ratio(request.user),
+        )
 
         start = (page - 1) * page_size
         page_videos = combined[start:start + page_size]
@@ -803,6 +1015,10 @@ class LoginWatchVideo(APIView):
             if yt_item.get("category"):
                 ensure_category(yt_item["category"], yt_item.get("category_name") or "")
                 record_category_interest(request.user, yt_item["category"])
+            record_tag_interest(
+                request.user,
+                extract_hashtags(yt_item.get("title"), yt_item.get("description")),
+            )
             return Response({
                 "video": yt_item,
                 "related_videos": youtube_related_videos(video_id),
@@ -832,10 +1048,15 @@ class LoginWatchVideo(APIView):
 
         # Record watch event with spam prevention
         record_view(request.user, video=video)
+        # Learn tag interests so #hashtags outrank the plain category.
+        record_tag_interest_from_watch(request.user, video=video)
 
-        # YouTube rows suggest live YouTube videos; native rows use co-watch.
+        # Cross-source related: YouTube rows add native CreekTube matches and
+        # native rows add live YouTube matches, so both platforms fill gaps.
         if video.source_type == "YOUTUBE" and video.youtube_video_id:
-            related_videos = youtube_related_videos(video.youtube_video_id)
+            native_related = related_native_for(video, limit=6)
+            youtube_related = youtube_related_videos(video.youtube_video_id)
+            related_videos = mixed_related_videos(native_related, youtube_related, request)
         elif video.category:
             # Co-watch powered related videos
             user_recent_ids = ranking.get_user_recent_video_ids(request.user)
@@ -866,24 +1087,31 @@ class LoginWatchVideo(APIView):
                             .order_by('-timestamp')[:remaining]
                         )
                         cowatch_videos.extend(cat_vids)
-                    related_videos = cowatch_videos[:12]
+                    native_related = cowatch_videos[:12]
                 else:
-                    related_videos = list(
+                    native_related = list(
                         approved_videos.filter(category=video.category)
                         .exclude(id=video.id)
                         .order_by('-timestamp')[:12]
                     )
             else:
-                related_videos = list(
+                native_related = list(
                     approved_videos.filter(category=video.category)
                     .exclude(id=video.id)
                     .order_by('-timestamp')[:12]
                 )
+            related_videos = mixed_related_videos(
+                native_related, related_youtube_for(video, limit=6), request
+            )
         else:
-            related_videos = list(
-                approved_videos.filter(category=video.category)
-                .exclude(id=video.id)
-                .order_by('-timestamp')[:12]
+            related_videos = mixed_related_videos(
+                list(
+                    approved_videos.filter(category=video.category)
+                    .exclude(id=video.id)
+                    .order_by('-timestamp')[:12]
+                ),
+                related_youtube_for(video, limit=6),
+                request,
             )
 
         video_author_channel = MediaProfile.objects.filter(user=video.author).first()
@@ -927,6 +1155,7 @@ class LoginWatchVideo(APIView):
             "dispike_count": dispike_count,
             "creek": CreekSerializer(creek).data if if_creeked else False,
             "creek_count": creek_count,
+            "related_videos": related_videos,
         }, status=status.HTTP_200_OK)
 
 
@@ -969,11 +1198,21 @@ class GuestWatchVideo(APIView):
         video_category = video.category
 
         if video.source_type == "YOUTUBE" and video.youtube_video_id:
-            related_videos = youtube_related_videos(video.youtube_video_id)
+            related_videos = mixed_related_videos(
+                related_native_for(video, limit=6),
+                youtube_related_videos(video.youtube_video_id),
+                request,
+            )
         else:
-            related_videos = approved_videos.filter(
-                category=video_category
-            ).exclude(id=video_id).order_by('-timestamp')[:12]
+            related_videos = mixed_related_videos(
+                list(
+                    approved_videos.filter(category=video_category)
+                    .exclude(id=video.id)
+                    .order_by('-timestamp')[:12]
+                ),
+                related_youtube_for(video, limit=6),
+                request,
+            )
 
         creek_like_count = Like.objects.filter(video=video).count()
         if video.source_type == "YOUTUBE" and video.youtube_video_id:
@@ -994,6 +1233,7 @@ class GuestWatchVideo(APIView):
             "dispike_count": dispike_count,
             "creek": False,
             "creek_count": creek_count,
+            "related_videos": related_videos,
         }, status=status.HTTP_200_OK)
 
 
@@ -1115,6 +1355,50 @@ class SearchUsers(APIView):
         serializer = MediaProfileSerializer(users, many=True, context={'request': request})
         return Response(serializer.data, status=status.HTTP_200_OK)
 
+
+class InterestTag(APIView):
+    """Every CreekTube video/snip carrying a hashtag, plus YouTube results.
+
+    Any user can write ``#whatever`` in a title or description; that hashtag
+    gets its own page at ``/interests/<tag>``. YouTube videos for the same tag
+    are mixed in when the hybrid (YouTube API) build is available.
+    """
+
+    permission_classes = [AllowAny]
+
+    def get(self, request, tag):
+        cleaned = str(tag).strip().lstrip("#").lower()
+        if not cleaned:
+            return Response({"detail": "Tag is required"}, status=400)
+
+        videos = (
+            Video.objects.filter(
+                is_approved=True, visibility="public", author__is_active=True,
+                tags__name=cleaned,
+            )
+            .exclude(source_type="YOUTUBE", author__username=YOUTUBE_SYSTEM_USERNAME)
+            .select_related("category", "author")
+            .distinct()
+            .order_by("-timestamp")[:40]
+        )
+        snips = (
+            Snip.objects.filter(
+                is_approved=True, visibility="public", author__is_active=True,
+                tags__name=cleaned,
+            )
+            .select_related("author")
+            .distinct()
+            .order_by("-timestamp")[:40]
+        )
+
+        return Response({
+            "tag": cleaned,
+            "videos": VideoSerializer(videos, many=True, context={"request": request}).data,
+            "snips": SnipSerializer(snips, many=True, context={"request": request}).data,
+            "youtube_videos": youtube_search_videos(cleaned, limit=20),
+        }, status=200)
+
+
 class SearchUsersMod(APIView):
     permission_classes = [IsModerator]
 
@@ -1151,6 +1435,12 @@ class ModPanel(APIView):
         }, status=status.HTTP_200_OK)
 
     def post(self, request):
+        profile = getattr(request.user, "mediaprofile", None)
+        if not (request.user.is_superuser or (profile and profile.has_permission("mod.approve"))):
+            return Response(
+                {"detail": "Your moderator title cannot approve or reject content"},
+                status=403,
+            )
         video_id = request.data.get("id")
         if not video_id:
             return Response({"detail": "Video ID not provided"}, status=status.HTTP_400_BAD_REQUEST)
@@ -1174,6 +1464,12 @@ class ModPanel(APIView):
         return Response(serializer.data, status=status.HTTP_200_OK)
 
     def delete(self, request):
+        profile = getattr(request.user, "mediaprofile", None)
+        if not (request.user.is_superuser or (profile and profile.has_permission("mod.approve"))):
+            return Response(
+                {"detail": "Your moderator title cannot remove content"},
+                status=403,
+            )
         video_id = request.data.get("id")
         if not video_id:
             return Response({"detail": "Video ID not provided"}, status=status.HTTP_400_BAD_REQUEST)
@@ -1196,10 +1492,20 @@ class SetAccountActive(APIView):
     Moderator tool: deactivate or reactivate an account.
     Deactivated accounts still exist but their content is hidden
     everywhere and they can no longer authenticate.
+
+    Requires the ``mod.deactivate`` permission, so a title restricted to
+    content approval cannot touch account state.
     """
     permission_classes = [IsModerator]
 
     def post(self, request):
+        profile = getattr(request.user, "mediaprofile", None)
+        if not (request.user.is_superuser or (profile and profile.has_permission("mod.deactivate"))):
+            return Response(
+                {"error": "Your moderator title does not include account deactivation rights"},
+                status=403,
+            )
+
         account_id = request.data.get("id")
         active = request.data.get("active")
         if not account_id:
@@ -1222,7 +1528,7 @@ class SetAccountActive(APIView):
             return Response({"error": "You cannot modify your own account"}, status=400)
 
         target_profile = getattr(user, "mediaprofile", None)
-        if active is False and target_profile and target_profile.moderator:
+        if active is False and target_profile and target_profile.is_moderator():
             return Response({"error": "You cannot deactivate another moderator's account"}, status=400)
 
         if active is False:
@@ -1273,6 +1579,159 @@ class ModActionLogs(APIView):
             for log in logs
         ]
         return Response(data, status=200)
+
+
+# ---------------------------
+# Superuser admin panel (titles, permissions, grants)
+# ---------------------------
+class AdminPanel(APIView):
+    """Superuser overview: every title, the permission catalog, and stats."""
+
+    permission_classes = [IsSuperUser]
+
+    def get(self, request):
+        titles = [_title_payload(t) for t in UserTitle.objects.all()]
+        users = User.objects.select_related("mediaprofile").count()
+        videos = Video.objects.count()
+        snips = Snip.objects.count()
+        mod_count = MediaProfile.objects.filter(moderator=True).count()
+        return Response({
+            "titles": titles,
+            "permissions": ADMIN_PERMISSIONS,
+            "stats": {
+                "users": users,
+                "videos": videos,
+                "snips": snips,
+                "moderators": mod_count,
+            },
+        }, status=200)
+
+
+class AdminTitles(APIView):
+    """Create, edit and delete titles (name, color, symbol, permissions)."""
+
+    permission_classes = [IsSuperUser]
+
+    def get(self, request):
+        return Response([_title_payload(t) for t in UserTitle.objects.all()], status=200)
+
+    def post(self, request):
+        name = (request.data.get("name") or "").strip()
+        if not name:
+            return Response({"error": "Title name is required"}, status=400)
+        color = (request.data.get("color") or "#e11d48").strip()
+        symbol = (request.data.get("symbol") or "").strip()[:8]
+        permissions = request.data.get("permissions") or []
+        if isinstance(permissions, str):
+            permissions = [p.strip() for p in permissions.split(",") if p.strip()]
+        permissions = [p for p in permissions if p in {x["code"] for x in ADMIN_PERMISSIONS}]
+
+        title, created = UserTitle.objects.get_or_create(
+            name=name,
+            defaults={"color": color, "symbol": symbol, "permissions": permissions},
+        )
+        if not created:
+            return Response({"error": "A title with that name already exists"}, status=400)
+        return Response(_title_payload(title), status=201)
+
+    def put(self, request):
+        title_id = request.data.get("id")
+        if not title_id:
+            return Response({"error": "Title ID required"}, status=400)
+        try:
+            title = UserTitle.objects.get(id=title_id)
+        except UserTitle.DoesNotExist:
+            return Response({"error": "Title not found"}, status=404)
+
+        name = (request.data.get("name") or "").strip()
+        if name:
+            dup = UserTitle.objects.filter(name=name).exclude(id=title.id).exists()
+            if dup:
+                return Response({"error": "A title with that name already exists"}, status=400)
+            title.name = name
+        title.color = (request.data.get("color") or title.color).strip()
+        title.symbol = (request.data.get("symbol", title.symbol) or "").strip()[:8]
+        if "permissions" in request.data:
+            permissions = request.data.get("permissions") or []
+            if isinstance(permissions, str):
+                permissions = [p.strip() for p in permissions.split(",") if p.strip()]
+            title.permissions = [p for p in permissions if p in {x["code"] for x in ADMIN_PERMISSIONS}]
+        title.save()
+
+        # Re-sync every holder's legacy flags in case permissions changed.
+        for profile in title.holders.all():
+            _sync_legacy_title_flags(profile)
+        return Response(_title_payload(title), status=200)
+
+    def delete(self, request):
+        title_id = request.data.get("id")
+        if not title_id:
+            return Response({"error": "Title ID required"}, status=400)
+        try:
+            title = UserTitle.objects.get(id=title_id)
+        except UserTitle.DoesNotExist:
+            return Response({"error": "Title not found"}, status=404)
+        holders = list(title.holders.all())
+        title.delete()
+        for profile in holders:
+            _sync_legacy_title_flags(profile)
+        return Response({"detail": "Title deleted"}, status=200)
+
+
+class AdminUsers(APIView):
+    """Search users and grant/revoke titles."""
+
+    permission_classes = [IsSuperUser]
+
+    def get(self, request):
+        q = (request.query_params.get("q") or "").strip()
+        profiles = MediaProfile.objects.select_related("user").prefetch_related("titles")
+        if q:
+            profiles = profiles.filter(user__username__icontains=q)
+        data = []
+        for profile in profiles[:50]:
+            data.append({
+                "id": profile.id,
+                "user_id": profile.user.id,
+                "username": profile.user.username,
+                "active": profile.user.is_active,
+                "is_superuser": profile.user.is_superuser,
+                "titles": profile.title_payloads(),
+                "moderator": profile.is_moderator(),
+                "official": profile.is_official(),
+            })
+        return Response(data, status=200)
+
+    def post(self, request):
+        profile_id = request.data.get("id")
+        title_id = request.data.get("title_id")
+        grant = request.data.get("active", True)
+        if isinstance(grant, str):
+            grant = grant.strip().lower() in ("1", "true", "yes", "on")
+
+        if not profile_id or not title_id:
+            return Response({"error": "Both a profile id and a title id are required"}, status=400)
+        try:
+            profile = MediaProfile.objects.get(id=profile_id)
+        except MediaProfile.DoesNotExist:
+            return Response({"error": "Account not found"}, status=404)
+        try:
+            title = UserTitle.objects.get(id=title_id)
+        except UserTitle.DoesNotExist:
+            return Response({"error": "Title not found"}, status=404)
+
+        if grant:
+            profile.titles.add(title)
+        else:
+            profile.titles.remove(title)
+        _sync_legacy_title_flags(profile)
+        return Response({
+            "id": profile.id,
+            "username": profile.user.username,
+            "titles": profile.title_payloads(),
+            "moderator": profile.is_moderator(),
+            "official": profile.is_official(),
+        }, status=200)
 
 
 # ---------------------------
@@ -1465,6 +1924,61 @@ class CreekAccount(APIView):
         return Response({"creek": True}, status=status.HTTP_201_CREATED)
 
 
+class CreekYouTubeChannel(APIView):
+    """Creek (follow) a YouTube channel, shown read-only alongside Creektube creators."""
+
+    permission_classes = [IsAuthenticated]
+
+    def post(self, request):
+        channel_id = (request.data.get("channel_id") or "").strip()
+        if not validate_youtube_channel_id(channel_id):
+            return Response(
+                {"detail": "A valid YouTube channel ID is required"},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        follow, created = YouTubeChannelFollow.objects.get_or_create(
+            user=request.user,
+            channel_id=channel_id,
+            defaults={
+                "channel_name": (request.data.get("channel_name") or "").strip()[:255],
+                "channel_thumbnail": (request.data.get("channel_thumbnail") or "").strip(),
+                "channel_handle": (request.data.get("channel_handle") or "").strip().lstrip("@")[:255],
+            },
+        )
+        if not created:
+            follow.delete()
+            return Response({"creek": False}, status=status.HTTP_200_OK)
+        return Response({
+            "creek": True,
+            "channel": {
+                "channel_id": follow.channel_id,
+                "channel_name": follow.channel_name,
+                "channel_thumbnail": follow.channel_thumbnail,
+                "channel_handle": follow.channel_handle,
+            },
+        }, status=status.HTTP_201_CREATED)
+
+
+class YouTubeFollows(APIView):
+    """List the YouTube channels the user creeks (read-only subscriptions)."""
+
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request):
+        follows = YouTubeChannelFollow.objects.filter(user=request.user)
+        return Response([
+            {
+                "channel_id": f.channel_id,
+                "channel_name": f.channel_name,
+                "channel_thumbnail": f.channel_thumbnail,
+                "channel_handle": f.channel_handle,
+                "created_at": f.created_at.isoformat(),
+            }
+            for f in follows
+        ], status=200)
+
+
 # ---------------------------
 # Upload Video API (with spam prevention)
 # ---------------------------
@@ -1539,6 +2053,7 @@ class UploadVideo(APIView):
 
         record_upload(request.user)
 
+        apply_tags(video_instance, title, description)
         serializer = VideoSerializer(video_instance, context={'request': request})
         return Response(serializer.data, status=201)
 
@@ -1618,6 +2133,7 @@ class AddYouTubeVideo(APIView):
 
         record_upload(request.user)
 
+        apply_tags(video, video.title, video.description)
         serializer = VideoSerializer(video, context={'request': request})
         return Response(serializer.data, status=201)
 
@@ -1955,6 +2471,7 @@ class UploadSnip(APIView):
             return Response({"message": "Upload failed. Please try again."}, status=500)
 
         record_upload(request.user)
+        apply_tags(snip, snip.title, snip.description)
         serializer = SnipSerializer(snip, context={"request": request})
 
         try:
@@ -2065,6 +2582,7 @@ class WatchSnip(APIView):
         # Record view with spam prevention (authenticated users only)
         if request.user.is_authenticated:
             record_view(request.user, snip=snip)
+            record_tag_interest_from_watch(request.user, snip=snip)
         else:
             Snip.objects.filter(id=snip.id).update(view_count=F("view_count") + 1)
             snip.refresh_from_db(fields=["view_count"])
