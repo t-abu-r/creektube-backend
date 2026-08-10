@@ -10,10 +10,14 @@ class MediaProfileSerializer(serializers.ModelSerializer):
     avatar = serializers.SerializerMethodField()
     banner = serializers.SerializerMethodField()
     active = serializers.BooleanField(source='user.is_active', read_only=True)
+    titles = serializers.SerializerMethodField()
 
     class Meta:
         model = MediaProfile
-        fields = ["id", "username", "categories", "moderator", "official", "active", "avatar", "banner"]
+        fields = ["id", "username", "categories", "moderator", "official", "active", "avatar", "banner", "titles"]
+
+    def get_titles(self, obj):
+        return obj.title_payloads()
 
     def get_thumbnail(self, obj):
         request = self.context.get("request")
