@@ -19,6 +19,7 @@ import requests
 from django.utils import timezone
 
 from .content import classify_content_type, SNIP, VIDEO
+from .models import Like, Video
 
 logger = logging.getLogger(__name__)
 
@@ -463,7 +464,37 @@ def youtube_channel_avatars_for(channel_ids):
     return result
 
 
-def _attach_youtube_enrichment(items):
+def _attach_creek_like_state(items, user):
+    """Attach CreekTube like counts and like state to feed-ready item dicts.
+
+    YouTube shows its own like count (``youtube_like_count``) alongside the
+    CreekTube like (``creek_like_count`` + ``is_liked``) which is tracked
+    against the materialized row owned by the reserved system account.
+    """
+    if not items:
+        return items
+    ids = [item.get("id") for item in items if validate_youtube_id(item.get("id"))]
+    if not ids:
+        return items
+    rows = {
+        v.youtube_video_id: v
+        for v in Video.objects.filter(source_type="YOUTUBE", youtube_video_id__in=ids)
+    }
+    liked_ids = set()
+    if user is not None and user.is_authenticated:
+        liked_ids = set(
+            Like.objects.filter(author=user, video__youtube_video_id__in=ids)
+            .values_list("video__youtube_video_id", flat=True)
+        )
+    for item in items:
+        vid = item.get("id")
+        row = rows.get(vid)
+        item["creek_like_count"] = row.likes.count() if row else 0
+        item["is_liked"] = vid in liked_ids
+    return items
+
+
+def _attach_youtube_enrichment(items, user=None):
     """Attach like counts and channel avatars to feed-ready item dicts."""
     if not items:
         return items
@@ -476,9 +507,11 @@ def _attach_youtube_enrichment(items):
         vid = item.get("id")
         if vid:
             item["like_count"] = likes.get(vid, 0)
+            item["youtube_like_count"] = likes.get(vid, 0)
         channel_id = item.get("youtube_channel_id")
         if channel_id and avatars.get(channel_id):
             item["author_avatar"] = avatars[channel_id]
+    _attach_creek_like_state(items, user)
     return items
 
 
@@ -559,7 +592,7 @@ def build_youtube_feed(user=None, interest_categories=None, limit=FEED_TOTAL_ITE
             item["view_count"] = counts.get(item["id"], 0)
             item["duration"] = durations.get(item["id"], 0)
             item["content_type"] = classify_content_type(item["duration"])
-        _attach_youtube_enrichment(items)
+        _attach_youtube_enrichment(items, user=user)
         # YouTube Shorts belong in the Snips feed, not the main video feed.
         items = [item for item in items if item.get("content_type") != SNIP]
     return items
@@ -597,7 +630,7 @@ def build_youtube_snips_feed(user=None, interest_categories=None, limit=FEED_TOT
             item["view_count"] = counts.get(item["id"], 0)
             item["duration"] = durations.get(item["id"], 0)
             item["content_type"] = classify_content_type(item["duration"])
-        _attach_youtube_enrichment(items)
+        _attach_youtube_enrichment(items, user=user)
     return items
 
 

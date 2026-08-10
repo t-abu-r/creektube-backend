@@ -882,6 +882,7 @@ class LiveYouTubeWatchTests(LiveYouTubeMixin, TestCase):
         self.assertIs(resp.data["liked"], True)
         self.assertEqual(resp.data["creek_like_count"], 1)
         self.assertGreaterEqual(resp.data["like_count"], 0)
+        self.assertIn("youtube_like_count", resp.data)
         # A stored row was materialized so the creek like persists.
         self.assertTrue(Video.objects.filter(youtube_video_id="dQw4w9WgXcQ").exists())
         resp = self.client.post("/media/pikevideo/", {"id": "dQw4w9WgXcQ"})
@@ -942,6 +943,9 @@ class LiveYouTubeSnipTests(LiveYouTubeMixin, TestCase):
         self.assertEqual(resp.data["embed_url"], "https://www.youtube.com/embed/dQw4w9WgXcQ")
         self.assertIsNone(resp.data["author_id"])
         self.assertIn("i.ytimg.com", resp.data["thumbnail"])
+        # YouTube likes and CreekTube likes are exposed separately.
+        self.assertIn("youtube_like_count", resp.data)
+        self.assertIn("creek_like_count", resp.data)
 
     def test_snip_feed_includes_youtube_shorts(self):
         self.mock_api()
@@ -959,6 +963,10 @@ class LiveYouTubeSnipTests(LiveYouTubeMixin, TestCase):
         self.assertEqual(first["source_type"], "YOUTUBE")
         self.assertIn(first["youtube_video_id"], VALID_YT_IDS)
         self.assertEqual(first["embed_url"], f"https://www.youtube.com/embed/{first['youtube_video_id']}")
+        # Live items carry both the real YouTube like count and creek state.
+        self.assertGreaterEqual(first["youtube_like_count"], 0)
+        self.assertGreaterEqual(first["creek_like_count"], 0)
+        self.assertIs(first["is_liked"], False)
 
     def test_snip_feed_without_api_key_is_native_only(self):
         with mock.patch.object(youtube_module, "_api_key", return_value=""):

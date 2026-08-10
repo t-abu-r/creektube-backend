@@ -198,24 +198,23 @@ def ensure_youtube_video(video_id, user=None):
 
 
 def youtube_snip_like_state(request, video_id):
-    """Return ``(is_liked, like_count)`` for a live YouTube short.
+    """Return ``(is_liked, like_count, youtube_like_count, creek_like_count)``.
 
     CreekTube likes on YouTube Shorts are stored against the lightweight
     YOUTUBE Video row (via the ``Like`` model) so they persist, while the
-    number shown mirrors the YouTube watch page: YouTube likes + CreekTube
-    likes.
+    heart count always mirrors the real YouTube like count.
     """
     user = request.user if getattr(request.user, "is_authenticated", False) else None
     video = ensure_youtube_video(video_id, user)
     if not video:
-        return False, 0
+        return False, 0, 0, 0
     creek_like_count = Like.objects.filter(video=video).count()
     yt_like_count = youtube_like_counts_for([video_id]).get(video_id, 0)
     is_liked = (
         user is not None
         and Like.objects.filter(video=video, author=request.user).exists()
     )
-    return is_liked, yt_like_count + creek_like_count
+    return is_liked, yt_like_count + creek_like_count, yt_like_count, creek_like_count
 
 
 # ---------------------------
@@ -1329,8 +1328,10 @@ class PikeVideo(APIView):
         creek_like_count = Like.objects.filter(video=video).count()
         if video.source_type == "YOUTUBE" and video.youtube_video_id:
             like_count = youtube_like_counts_for([video.youtube_video_id]).get(video.youtube_video_id, 0)
+            youtube_like_count = like_count
         else:
             like_count = creek_like_count
+            youtube_like_count = None
 
         if not created:
             like.delete()
@@ -1338,12 +1339,14 @@ class PikeVideo(APIView):
             return Response({
                 "liked": False,
                 "like_count": like_count,
+                "youtube_like_count": youtube_like_count,
                 "creek_like_count": creek_like_count,
             }, status=status.HTTP_200_OK)
 
         return Response({
             "liked": True,
             "like_count": like_count,
+            "youtube_like_count": youtube_like_count,
             "creek_like_count": creek_like_count,
         }, status=status.HTTP_201_CREATED)
 
@@ -1981,7 +1984,7 @@ class WatchSnip(APIView):
             yt_item = get_youtube_video_details(snip_id)
             if not yt_item:
                 return Response({"detail": "Snip not found"}, status=404)
-            is_liked, like_count = youtube_snip_like_state(request, snip_id)
+            is_liked, like_count, yt_like_count, creek_like_count = youtube_snip_like_state(request, snip_id)
             return Response({
                 "id": yt_item.get("youtube_video_id") or snip_id,
                 "title": yt_item["title"],
@@ -1995,6 +1998,8 @@ class WatchSnip(APIView):
                 "author_active": True,
                 "view_count": yt_item["view_count"],
                 "like_count": like_count,
+                "youtube_like_count": yt_like_count,
+                "creek_like_count": creek_like_count,
                 "is_liked": is_liked,
                 "source_type": "YOUTUBE",
                 "content_type": yt_item.get("content_type") or "SNIP",
@@ -2054,10 +2059,14 @@ class LikeSnip(APIView):
                 return Response({
                     "is_liked": False,
                     "like_count": max(yt_like_count + creek_like_count, 0),
+                    "youtube_like_count": yt_like_count,
+                    "creek_like_count": creek_like_count,
                 }, status=200)
             return Response({
                 "is_liked": True,
                 "like_count": yt_like_count + creek_like_count,
+                "youtube_like_count": yt_like_count,
+                "creek_like_count": creek_like_count,
             }, status=201)
 
         snip = get_object_or_404(Snip.objects.filter(author__is_active=True), id=snip_id)
