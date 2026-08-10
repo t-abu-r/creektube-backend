@@ -34,6 +34,7 @@ VIEW_GAP = timedelta(minutes=2)  # min time between views from same user on same
 VIEW_MAX_PER_USER = 6  # max views per user per video/snip
 COMMENT_SPAM_LIMIT = 6  # max comments per video
 COMMENT_SPAM_WINDOW = timedelta(minutes=2)
+YOUTUBE_SYSTEM_USERNAME = "youtube_system"  # videos from this account are hidden from public feeds
 
 # ---------------------------------------------------------------------------
 # Admin titles: the permission catalog that titles can carry.
@@ -252,6 +253,7 @@ class LoginGetVideo(APIView):
 
         approved_videos = (
             Video.objects.filter(is_approved=True, visibility="public", author__is_active=True)
+            .exclude(author__username=YOUTUBE_SYSTEM_USERNAME)
             .select_related('category')
             .prefetch_related('tags')
             .annotate(
@@ -317,7 +319,7 @@ class GuestGetVideo(APIView):
         # Single video by ID (used for SSR/metadata)
         video_id = request.query_params.get('video_id')
         if video_id:
-            video = Video.objects.filter(id=video_id, is_approved=True, visibility="public", author__is_active=True).select_related('author').first()
+            video = Video.objects.filter(id=video_id, is_approved=True, visibility="public", author__is_active=True).exclude(author__username=YOUTUBE_SYSTEM_USERNAME).select_related('author').first()
             if not video:
                 return Response({"detail": "Video not found"}, status=404)
             serializer = VideoSerializer(video, many=False, context={'request': request})
@@ -377,6 +379,7 @@ class GuestGetVideo(APIView):
 
         approved_videos = (
             Video.objects.filter(is_approved=True, visibility="public", author__is_active=True)
+            .exclude(author__username=YOUTUBE_SYSTEM_USERNAME)
             .select_related('category')
             .annotate(
                 num_likes=Count('likes', distinct=True),
@@ -546,8 +549,8 @@ class LoginWatchVideo(APIView):
             return Response({"detail": "Video ID not provided"}, status=status.HTTP_400_BAD_REQUEST)
 
         # Allow public + unlisted for everyone, private only for owner
-        video = get_object_or_404(Video.objects.filter(is_approved=True, author__is_active=True).prefetch_related("comments__author"), id=video_id)
-        approved_videos = Video.objects.filter(is_approved=True, visibility="public", author__is_active=True)
+        video = get_object_or_404(Video.objects.filter(is_approved=True, author__is_active=True).exclude(author__username=YOUTUBE_SYSTEM_USERNAME).prefetch_related("comments__author"), id=video_id)
+        approved_videos = Video.objects.filter(is_approved=True, visibility="public", author__is_active=True).exclude(author__username=YOUTUBE_SYSTEM_USERNAME)
         if video.visibility == "private" and video.author != request.user:
             return Response({"detail": "Video not found"}, status=404)
 
@@ -654,8 +657,8 @@ class GuestWatchVideo(APIView):
         if not video_id:
             return Response({"detail": "Video ID not provided"}, status=status.HTTP_400_BAD_REQUEST)
 
-        approved_videos = Video.objects.filter(is_approved=True, visibility="public", author__is_active=True)
-        video = get_object_or_404(Video.objects.filter(is_approved=True, author__is_active=True), id=video_id)
+        approved_videos = Video.objects.filter(is_approved=True, visibility="public", author__is_active=True).exclude(author__username=YOUTUBE_SYSTEM_USERNAME)
+        video = get_object_or_404(Video.objects.filter(is_approved=True, author__is_active=True).exclude(author__username=YOUTUBE_SYSTEM_USERNAME), id=video_id)
         video_category = video.category
 
         related_videos = approved_videos.filter(
@@ -725,7 +728,7 @@ class SearchVideo(APIView):
             Q(title__icontains=title) |
             Q(description__icontains=title),
             author__is_active=True
-        ).order_by("-id")[:20]
+        ).exclude(author__username=YOUTUBE_SYSTEM_USERNAME).order_by("-id")[:20]
 
         users = MediaProfile.objects.filter(
             Q(user__username__icontains=title),
@@ -792,6 +795,7 @@ class InterestTag(APIView):
                 is_approved=True, visibility="public", author__is_active=True,
                 tags__name=cleaned,
             )
+            .exclude(author__username=YOUTUBE_SYSTEM_USERNAME)
             .select_related("category", "author")
             .distinct()
             .order_by("-timestamp")[:40]
@@ -1987,6 +1991,7 @@ class WatchHistory(APIView):
                 is_approved=True,
                 author__is_active=True,
             )
+            .exclude(author__username=YOUTUBE_SYSTEM_USERNAME)
             .annotate(last_watched=Max('watch_events__timestamp'))
             .order_by('-last_watched')[:limit]
         )
