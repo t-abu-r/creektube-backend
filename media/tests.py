@@ -1,13 +1,22 @@
 from datetime import timedelta
+from unittest import mock
 
 from django.contrib.auth.models import User
+from django.db import IntegrityError
 from django.test import TestCase
 from django.utils import timezone
 from rest_framework.test import APIClient
 
 from . import ranking
-from .models import (CategoryVideo, Creek, DisPike, Like, MediaProfile,
-                     Snip, Video, WatchEvent, UploadRateLimit, UserTitle)
+from .models import (CategoryVideo, Comment, Creek, DisPike, Like, MediaProfile,
+                     Snip, Video, WatchEvent, UploadRateLimit, UserTitle,
+                     YouTubeChannelFollow)
+from . import youtube as youtube_module
+from .youtube import (normalize_youtube_url, validate_youtube_id,
+                      youtube_embed_url, youtube_thumbnail_url, get_video_metadata,
+                      YOUTUBE_SYSTEM_USERNAME)
+from .Serializers import VideoSerializer
+from .views import ensure_category, recent_watch_keywords
 
 
 def make_video(author, category, hours_old=0, is_approved=True, title="video"):
@@ -446,6 +455,772 @@ class FeedViewTests(TestCase):
 
 
 # ---------------------------------------------------------------------------
+# YouTube source support
+# ---------------------------------------------------------------------------
+class YouTubeNormalizationTests(TestCase):
+    def test_accepts_watch_url(self):
+        self.assertEqual(
+            normalize_youtube_url("https://www.youtube.com/watch?v=dQw4w9WgXcQ"),
+            "dQw4w9WgXcQ",
+        )
+
+    def test_accepts_watch_url_with_extra_params(self):
+        self.assertEqual(
+            normalize_youtube_url("https://www.youtube.com/watch?v=dQw4w9WgXcQ&list=PL123"),
+            "dQw4w9WgXcQ",
+        )
+
+    def test_accepts_short_url(self):
+        self.assertEqual(normalize_youtube_url("https://youtu.be/dQw4w9WgXcQ"), "dQw4w9WgXcQ")
+
+    def test_accepts_embed_url(self):
+        self.assertEqual(
+            normalize_youtube_url("https://www.youtube.com/embed/dQw4w9WgXcQ"),
+            "dQw4w9WgXcQ",
+        )
+
+    def test_accepts_shorts_url(self):
+        self.assertEqual(
+            normalize_youtube_url("https://www.youtube.com/shorts/dQw4w9WgXcQ"),
+            "dQw4w9WgXcQ",
+        )
+
+    def test_accepts_raw_id(self):
+        self.assertEqual(normalize_youtube_url("dQw4w9WgXcQ"), "dQw4w9WgXcQ")
+
+    def test_rejects_invalid_input(self):
+        for bad in ["", None, "not-a-youtube-url", "https://example.com/x",
+                    "https://www.youtube.com/watch?v=", "dQw4w9WgXc"]:
+            self.assertIsNone(normalize_youtube_url(bad))
+
+    def test_validate_youtube_id(self):
+        self.assertTrue(validate_youtube_id("dQw4w9WgXcQ"))
+        self.assertFalse(validate_youtube_id("dQw4w9WgXcQ!@#"))
+        self.assertFalse(validate_youtube_id(""))
+
+    def test_embed_and_thumbnail_urls(self):
+        self.assertEqual(youtube_embed_url("dQw4w9WgXcQ"), "https://www.youtube.com/embed/dQw4w9WgXcQ")
+        self.assertEqual(youtube_thumbnail_url("dQw4w9WgXcQ"), "https://i.ytimg.com/vi/dQw4w9WgXcQ/hqdefault.jpg")
+        self.assertEqual(youtube_embed_url("nope"), "")
+        self.assertEqual(youtube_thumbnail_url("nope"), "")
+
+    def test_metadata_returns_none_without_api_key(self):
+        self.assertIsNone(get_video_metadata("dQw4w9WgXcQ"))
+
+    def test_metadata_returns_none_for_invalid_id(self):
+        from django.conf import settings
+        with self.settings(YOUTUBE_API_KEY="test-key"):
+            self.assertIsNone(get_video_metadata("invalid"))
+
+
+class AddYouTubeVideoTests(TestCase):
+    def setUp(self):
+        self.client = APIClient()
+        self.user = User.objects.create_user(username="yt_creator", password="pw")
+        self.client.force_authenticate(user=self.user)
+
+    def test_add_youtube_video_requires_auth(self):
+        anon = APIClient()
+        resp = anon.post("/media/youtube/add/", {"youtube_url": "https://youtu.be/dQw4w9WgXcQ"})
+        self.assertEqual(resp.status_code, 401)
+
+    def test_add_youtube_video_stores_id_not_file(self):
+        resp = self.client.post("/media/youtube/add/", {
+            "youtube_url": "https://www.youtube.com/watch?v=dQw4w9WgXcQ",
+            "title": "Never Gonna Give You Up",
+            "description": "A classic.",
+            "category": "music",
+        })
+        self.assertEqual(resp.status_code, 201)
+        data = resp.data
+        self.assertEqual(data["source_type"], "YOUTUBE")
+        self.assertEqual(data["youtube_video_id"], "dQw4w9WgXcQ")
+        self.assertEqual(data["embed_url"], "https://www.youtube.com/embed/dQw4w9WgXcQ")
+        self.assertIn("i.ytimg.com", data["thumbnail"])
+        self.assertIsNone(data["video"])  # no file is stored
+
+        row = Video.objects.get(id=data["id"])
+        self.assertEqual(row.source_type, "YOUTUBE")
+        self.assertEqual(row.youtube_video_id, "dQw4w9WgXcQ")
+        self.assertEqual(row.video, "")
+        self.assertTrue(row.is_approved)
+
+    def test_add_youtube_video_rejects_invalid_url(self):
+        resp = self.client.post("/media/youtube/add/", {"youtube_url": "https://example.com/not-youtube"})
+        self.assertEqual(resp.status_code, 400)
+
+    def test_add_youtube_video_never_trusts_client_source_type(self):
+        resp = self.client.post("/media/youtube/add/", {
+            "youtube_video_id": "dQw4w9WgXcQ",
+            "source_type": "CREEKTUBE",
+        })
+        self.assertEqual(resp.status_code, 201)
+        self.assertEqual(resp.data["source_type"], "YOUTUBE")
+
+
+class UnifiedFeedTests(TestCase):
+    def setUp(self):
+        self.client = APIClient()
+        self.user = User.objects.create_user(username="alice_hybrid", password="pw")
+        self.other = User.objects.create_user(username="bob_hybrid", password="pw")
+        self.gaming = CategoryVideo.objects.create(name="Gaming", slug="gaming")
+        self.client.force_authenticate(user=self.user)
+
+    def test_native_video_serializes_as_creektube_source(self):
+        native = make_video(self.other, self.gaming, title="native_vid")
+        resp = self.client.get("/media/guestgetvideo/?video_id=%d" % native.id)
+        self.assertEqual(resp.status_code, 200)
+        self.assertEqual(resp.data["source_type"], "CREEKTUBE")
+        self.assertIsNone(resp.data["embed_url"])
+
+    def test_youtube_videos_share_the_feed(self):
+        native = make_video(self.other, self.gaming, hours_old=1, title="native")
+        Video.objects.create(
+            author=self.other,
+            category=self.gaming,
+            title="youtube_vid",
+            description="desc",
+            is_approved=True,
+            source_type="YOUTUBE",
+            youtube_video_id="dQw4w9WgXcQ",
+            thumbnail="https://i.ytimg.com/vi/dQw4w9WgXcQ/hqdefault.jpg",
+        )
+        resp = self.client.get("/media/logingetvideo/")
+        self.assertEqual(resp.status_code, 200)
+        results = resp.data["results"]
+        titles = [v["title"] for v in results]
+        self.assertIn("native", titles)
+        self.assertIn("youtube_vid", titles)
+        yt_item = next(v for v in results if v["title"] == "youtube_vid")
+        self.assertEqual(yt_item["source_type"], "YOUTUBE")
+        self.assertEqual(yt_item["youtube_video_id"], "dQw4w9WgXcQ")
+
+    def test_guest_feed_includes_youtube_videos(self):
+        Video.objects.create(
+            author=self.other,
+            category=self.gaming,
+            title="youtube_guest",
+            description="desc",
+            is_approved=True,
+            source_type="YOUTUBE",
+            youtube_video_id="dQw4w9WgXcQ",
+        )
+        resp = self.client.get("/media/guestgetvideo/")
+        self.assertEqual(resp.status_code, 200)
+        self.assertIn("youtube_guest", [v["title"] for v in resp.data["results"]])
+
+    def test_search_includes_youtube_videos(self):
+        Video.objects.create(
+            author=self.other,
+            category=self.gaming,
+            title="CreekTube Search YouTube Test",
+            description="desc",
+            is_approved=True,
+            source_type="YOUTUBE",
+            youtube_video_id="dQw4w9WgXcQ",
+        )
+        resp = self.client.get("/media/searchvideo/?q=Search YouTube Test")
+        self.assertEqual(resp.status_code, 200)
+        yt_items = [v for v in resp.data["videos"] if v["source_type"] == "YOUTUBE"]
+        self.assertEqual(len(yt_items), 1)
+        self.assertEqual(yt_items[0]["youtube_video_id"], "dQw4w9WgXcQ")
+
+
+# ---------------------------------------------------------------------------
+# Live YouTube mixing (the Data API, not stored rows)
+# ---------------------------------------------------------------------------
+VALID_YT_IDS = ["dQw4w9WgXcQ", "aaaaaaaaaaa", "bbbbbbbbbbb", "ccccccccccc"]
+
+
+def fake_youtube_request(endpoint, params):
+    """Canned YouTube Data API response for tests."""
+    if endpoint == "search":
+        query = (params.get("q") or "default").strip()
+        items = []
+        for idx, vid in enumerate(VALID_YT_IDS):
+            items.append({
+                "id": {"videoId": vid},
+                "snippet": {
+                    "title": f"{query} result {idx}",
+                    "description": "A description",
+                    "channelId": "UCfakechannel",
+                    "channelTitle": "Fake Channel",
+                    "publishedAt": "2024-01-01T00:00:00Z",
+                },
+            })
+        return {"items": items}
+    if endpoint == "videos":
+        part = params.get("part", "")
+        if params.get("chart") == "mostPopular":
+            # The cheap default feed: no ``id`` param, just a chart.
+            items = []
+            for idx, vid in enumerate(VALID_YT_IDS):
+                item = {"id": vid, "snippet": {
+                    "title": f"Popular result {idx}",
+                    "description": "A description",
+                    "channelId": "UCfakechannel",
+                    "channelTitle": "Fake Channel",
+                    "publishedAt": "2024-01-01T00:00:00Z",
+                }}
+                if "contentDetails" in part:
+                    try:
+                        i = VALID_YT_IDS.index(vid)
+                    except ValueError:
+                        i = 0
+                    item["contentDetails"] = {"duration": "PT45S" if i == 0 else "PT6M"}
+                if "statistics" in part:
+                    item["statistics"] = {"viewCount": "12345"}
+                items.append(item)
+            return {"items": items}
+        items = []
+        for vid in (params.get("id") or "").split(","):
+            if not vid:
+                continue
+            item = {"id": vid}
+            if "statistics" in part:
+                item["statistics"] = {"viewCount": "12345"}
+            if "snippet" in part:
+                item["snippet"] = {
+                    "title": "Video Details Title",
+                    "description": "Details description",
+                    "channelId": "UCfakechannel",
+                    "channelTitle": "Fake Channel",
+                    "publishedAt": "2024-01-01T00:00:00Z",
+                }
+            if "contentDetails" in part:
+                # First mock id is a Short (PT45S), the rest are long-form so
+                # the main video feed only ever mixes in long YouTube videos.
+                try:
+                    idx = VALID_YT_IDS.index(vid)
+                except ValueError:
+                    idx = 0
+                item["contentDetails"] = {"duration": "PT45S" if idx == 0 else "PT6M"}
+            items.append(item)
+        return {"items": items}
+    if endpoint == "channels":
+        part = params.get("part", "")
+        items = []
+        for cid in (params.get("id") or "").split(","):
+            if not cid:
+                continue
+            item = {
+                "id": cid,
+                "snippet": {
+                    "title": "Fake Channel",
+                    "customUrl": "@fakechannel",
+                    "description": "A channel description",
+                    "publishedAt": "2020-01-01T00:00:00Z",
+                    "thumbnails": {
+                        "default": {"url": "https://example.com/avatar.jpg"},
+                        "medium": {"url": "https://example.com/avatar_m.jpg"},
+                        "high": {"url": "https://example.com/avatar_h.jpg"},
+                    },
+                },
+                "statistics": {"subscriberCount": "1000", "videoCount": "50", "viewCount": "9000"},
+                "brandingSettings": {"image": {"bannerImageUrl": "https://example.com/banner.jpg"}},
+            }
+            if "contentDetails" in part:
+                item["contentDetails"] = {"relatedPlaylists": {"uploads": "UUfakeuploadplaylist"}}
+            items.append(item)
+        return {"items": items}
+    if endpoint == "playlistItems":
+        items = []
+        for idx, vid in enumerate(VALID_YT_IDS):
+            items.append({
+                "id": f"playlistItem{idx}",
+                "snippet": {
+                    "channelId": "UCfakechannel",
+                    "channelTitle": "Fake Channel",
+                    "title": f"Upload {idx}",
+                    "description": "A description",
+                    "publishedAt": "2024-01-01T00:00:00Z",
+                    "resourceId": {"videoId": vid},
+                },
+            })
+        return {"items": items}
+    if endpoint == "commentThreads":
+        items = []
+        for idx in range(3):
+            items.append({
+                "id": f"yt_comment_{idx}",
+                "snippet": {
+                    "channelId": "UCfakechannel",
+                    "videoId": params.get("videoId", ""),
+                    "topLevelComment": {
+                        "id": f"yt_comment_{idx}",
+                        "snippet": {
+                            "textDisplay": f"YouTube comment {idx}",
+                            "authorDisplayName": "YT Commenter",
+                            "authorProfileImageUrl": "https://example.com/commenter.jpg",
+                            "authorChannelId": {"value": "UCfakechannel"},
+                            "publishedAt": "2024-01-01T00:00:00Z",
+                            "likeCount": "2",
+                            "isPinned": idx == 0,
+                        },
+                    },
+                },
+            })
+        return {"items": items}
+    return None
+
+
+class LiveYouTubeMixin:
+    def mock_api(self):
+        youtube_module._cache.clear()
+        youtube_module._last_api_error = None
+        youtube_module._quota_blocked_until = 0.0
+        patcher_key = mock.patch.object(youtube_module, "_api_key", return_value="test-key")
+        patcher_req = mock.patch.object(youtube_module, "_youtube_request", side_effect=fake_youtube_request)
+        patcher_key.start()
+        patcher_req.start()
+        self.addCleanup(patcher_key.stop)
+        self.addCleanup(patcher_req.stop)
+
+
+class LiveYouTubeFeedTests(LiveYouTubeMixin, TestCase):
+    def setUp(self):
+        self.client = APIClient()
+        self.user = User.objects.create_user(username="hybrid_interest", password="pw")
+        self.other = User.objects.create_user(username="hybrid_author", password="pw")
+        self.gaming = CategoryVideo.objects.create(name="Gaming", slug="gaming")
+        self.music = CategoryVideo.objects.create(name="Music", slug="music")
+
+    def test_guest_feed_mixes_live_youtube_items(self):
+        self.mock_api()
+        make_video(self.other, self.gaming, hours_old=1, title="native_one")
+        resp = self.client.get("/media/guestgetvideo/")
+        self.assertEqual(resp.status_code, 200)
+        yt_items = [v for v in resp.data["results"] if v["source_type"] == "YOUTUBE"]
+        self.assertTrue(len(yt_items) > 0)
+        first = yt_items[0]
+        self.assertEqual(first["source_type"], "YOUTUBE")
+        self.assertIn(first["youtube_video_id"], VALID_YT_IDS)
+        self.assertEqual(first["embed_url"], f"https://www.youtube.com/embed/{first['youtube_video_id']}")
+        self.assertIn("i.ytimg.com", first["thumbnail"])
+        self.assertIsNone(first["author_id"])
+        self.assertEqual(first["view_count"], 12345)
+
+    def test_logged_in_feed_mixes_and_interleaves(self):
+        self.mock_api()
+        self.client.force_authenticate(user=self.user)
+        native = make_video(self.other, self.gaming, hours_old=1, title="native_primary")
+        resp = self.client.get("/media/logingetvideo/")
+        self.assertEqual(resp.status_code, 200)
+        results = resp.data["results"]
+        titles = [v["title"] for v in results]
+        self.assertIn("native_primary", titles)
+        yt_items = [v for v in results if v["source_type"] == "YOUTUBE"]
+        self.assertTrue(len(yt_items) > 0)
+        # YouTube items never repeat a native video's id or title.
+        self.assertNotIn(native.id, [v["id"] for v in yt_items])
+
+    def test_main_feed_excludes_youtube_shorts(self):
+        self.mock_api()
+        make_video(self.other, self.gaming, hours_old=1, title="native_main")
+        resp = self.client.get("/media/guestgetvideo/")
+        self.assertEqual(resp.status_code, 200)
+        for v in resp.data["results"]:
+            if v["source_type"] == "YOUTUBE":
+                self.assertEqual(v["content_type"], "VIDEO")
+
+    def test_homepage_snips_tab_mixes_youtube_shorts(self):
+        self.mock_api()
+        Snip.objects.create(
+            author=self.other, title="native_snip_home", description="",
+            video="native.mp4", thumbnail="", visibility="public",
+            is_approved=True,
+        )
+        resp = self.client.get("/media/guestgetvideo/?category=shortform-videos")
+        self.assertEqual(resp.status_code, 200)
+        titles = [item["title"] for item in resp.data["results"]]
+        self.assertIn("native_snip_home", titles)
+        yt_shorts = [
+            item for item in resp.data["results"]
+            if item.get("source_type") == "YOUTUBE" and item.get("content_type") == "SNIP"
+        ]
+        self.assertTrue(len(yt_shorts) > 0)
+        self.assertEqual(yt_shorts[0]["id"], VALID_YT_IDS[0])
+        self.assertEqual(
+            yt_shorts[0]["embed_url"],
+            f"https://www.youtube.com/embed/{VALID_YT_IDS[0]}",
+        )
+
+    def test_logged_in_feed_builds_queries_from_interests(self):
+        self.mock_api()
+        profile, _ = MediaProfile.objects.get_or_create(user=self.user)
+        profile.categories = {"gaming": 9, "music": 3}
+        profile.save()
+        queries = []
+
+        def spy_request(endpoint, params):
+            if endpoint == "search":
+                queries.append(params.get("q"))
+            return fake_youtube_request(endpoint, params)
+
+        with mock.patch.object(youtube_module, "_youtube_request", side_effect=spy_request):
+            self.client.force_authenticate(user=self.user)
+            self.client.get("/media/logingetvideo/")
+        self.assertTrue(any("gaming" in q for q in queries))
+
+    def test_feed_without_api_key_is_native_only(self):
+        with mock.patch.object(youtube_module, "_api_key", return_value=""):
+            make_video(self.other, self.gaming, hours_old=1, title="only_native")
+            resp = self.client.get("/media/guestgetvideo/")
+        self.assertEqual(resp.status_code, 200)
+        for v in resp.data["results"]:
+            self.assertNotEqual(v["source_type"], "YOUTUBE")
+        self.assertIn("only_native", [v["title"] for v in resp.data["results"]])
+
+    def test_quota_error_degrades_to_native_feed(self):
+        def boom(*args, **kwargs):
+            return None
+
+        with mock.patch.object(youtube_module, "_api_key", return_value="test-key"), \
+             mock.patch.object(youtube_module, "_youtube_request", side_effect=boom):
+            make_video(self.other, self.gaming, hours_old=1, title="native_survives")
+            resp = self.client.get("/media/guestgetvideo/")
+        self.assertEqual(resp.status_code, 200)
+        self.assertIn("native_survives", [v["title"] for v in resp.data["results"]])
+
+    def test_quota_error_is_surfaced_in_feed_payload(self):
+        def boom(*args, **kwargs):
+            youtube_module._record_api_error("search", 403, "quotaExceeded", "Quota exceeded")
+            return None
+
+        youtube_module._cache.clear()
+        youtube_module._last_api_error = None
+        youtube_module._quota_blocked_until = 0.0
+        with mock.patch.object(youtube_module, "_api_key", return_value="test-key"), \
+             mock.patch.object(youtube_module, "_youtube_request", side_effect=boom):
+            make_video(self.other, self.gaming, hours_old=1, title="native_status")
+            resp = self.client.get("/media/guestgetvideo/")
+        self.assertEqual(resp.status_code, 200)
+        self.assertIn("native_status", [v["title"] for v in resp.data["results"]])
+        err = resp.data.get("youtube_error")
+        self.assertIsNotNone(err)
+        self.assertEqual(err["reason"], "quotaExceeded")
+
+    def test_channel_videos_use_playlist_items_not_search(self):
+        self.mock_api()
+        calls = []
+
+        def recording(endpoint, params):
+            calls.append(endpoint)
+            return fake_youtube_request(endpoint, params)
+
+        with mock.patch.object(youtube_module, "_youtube_request", side_effect=recording):
+            items = youtube_module.youtube_channel_videos("UCabcdefghijklmnopqrstuv", limit=4)
+        self.assertGreater(len(items), 0)
+        self.assertNotIn("search", calls)
+        self.assertIn("playlistItems", calls)
+
+
+class LiveYouTubeWatchTests(LiveYouTubeMixin, TestCase):
+    def setUp(self):
+        self.client = APIClient()
+        self.user = User.objects.create_user(username="watch_yt", password="pw")
+
+    def test_guestgetvideo_serves_live_youtube_id(self):
+        self.mock_api()
+        resp = self.client.get("/media/guestgetvideo/?video_id=dQw4w9WgXcQ")
+        self.assertEqual(resp.status_code, 200)
+        self.assertEqual(resp.data["source_type"], "YOUTUBE")
+        self.assertEqual(resp.data["youtube_video_id"], "dQw4w9WgXcQ")
+        self.assertEqual(resp.data["embed_url"], "https://www.youtube.com/embed/dQw4w9WgXcQ")
+
+    def test_guestwatch_serves_live_youtube_video(self):
+        self.mock_api()
+        resp = self.client.post("/media/guestwatchvideo/", {"video_id": "dQw4w9WgXcQ"})
+        self.assertEqual(resp.status_code, 200)
+        self.assertEqual(resp.data["video"]["source_type"], "YOUTUBE")
+        self.assertEqual(resp.data["like_count"], 0)
+        self.assertIs(resp.data["like"], False)
+        self.assertGreaterEqual(len(resp.data["related_videos"]), 1)
+        self.assertEqual(resp.data["related_videos"][0]["source_type"], "YOUTUBE")
+
+    def test_loginwatch_serves_live_youtube_video(self):
+        self.mock_api()
+        self.client.force_authenticate(user=self.user)
+        resp = self.client.post("/media/watchvideo/", {"video_id": "aaaaaaaaaaa"})
+        self.assertEqual(resp.status_code, 200)
+        self.assertEqual(resp.data["video"]["source_type"], "YOUTUBE")
+        self.assertEqual(resp.data["video"]["youtube_video_id"], "aaaaaaaaaaa")
+        self.assertEqual(resp.data["creek_count"], 0)
+
+    def test_watch_unknown_id_returns_404(self):
+        with mock.patch.object(youtube_module, "_api_key", return_value=""):
+            resp = self.client.post("/media/guestwatchvideo/", {"video_id": "not-a-video-id"})
+        self.assertEqual(resp.status_code, 404)
+
+    def test_like_on_live_youtube_is_saved(self):
+        self.client.force_authenticate(user=self.user)
+        resp = self.client.post("/media/pikevideo/", {"id": "dQw4w9WgXcQ"})
+        self.assertEqual(resp.status_code, 201)
+        self.assertIs(resp.data["liked"], True)
+        self.assertEqual(resp.data["creek_like_count"], 1)
+        self.assertGreaterEqual(resp.data["like_count"], 0)
+        self.assertIn("youtube_like_count", resp.data)
+        # A stored row was materialized so the creek like persists.
+        self.assertTrue(Video.objects.filter(youtube_video_id="dQw4w9WgXcQ").exists())
+        resp = self.client.post("/media/pikevideo/", {"id": "dQw4w9WgXcQ"})
+        self.assertEqual(resp.status_code, 200)
+        self.assertIs(resp.data["liked"], False)
+        self.assertEqual(resp.data["creek_like_count"], 0)
+        # Dislikes work too once a stored row exists.
+        resp = self.client.post("/media/dispikevideo/", {"id": "dQw4w9WgXcQ"})
+        self.assertEqual(resp.status_code, 201)
+        self.assertIs(resp.data["dispike"], True)
+        resp = self.client.post("/media/dispikevideo/", {"id": "dQw4w9WgXcQ"})
+        self.assertEqual(resp.status_code, 200)
+        self.assertIs(resp.data["dispike"], False)
+
+    def test_comments_on_live_youtube_are_served(self):
+        self.mock_api()
+        resp = self.client.get("/media/comment/?video_id=dQw4w9WgXcQ")
+        self.assertEqual(resp.status_code, 200)
+        self.assertGreaterEqual(len(resp.data), 1)
+        first = resp.data[0]
+        self.assertEqual(first["source"], "youtube")
+        self.assertIs(first["read_only"], True)
+        self.assertEqual(first["text"], "YouTube comment 0")
+
+    def test_comment_submit_on_live_youtube_is_saved(self):
+        self.client.force_authenticate(user=self.user)
+        resp = self.client.post("/media/uploadcommentvideo/", {"video_id": "dQw4w9WgXcQ", "comment": "hi"})
+        self.assertEqual(resp.status_code, 201)
+        self.assertEqual(resp.data["comment"]["text"], "hi")
+        # CreekTube comments on a live YouTube video are persisted, not rejected.
+        video = Video.objects.get(youtube_video_id="dQw4w9WgXcQ")
+        self.assertTrue(Comment.objects.filter(video=video, text="hi").exists())
+        resp = self.client.get("/media/comment/?video_id=dQw4w9WgXcQ")
+        self.assertEqual(resp.status_code, 200)
+        self.assertEqual(resp.data[0]["text"], "hi")
+
+    def test_trackretention_on_live_youtube_is_ok(self):
+        self.client.force_authenticate(user=self.user)
+        resp = self.client.post("/media/trackretention/", {"video_id": "dQw4w9WgXcQ", "duration": 30})
+        self.assertEqual(resp.status_code, 200)
+
+
+class LiveYouTubeSnipTests(LiveYouTubeMixin, TestCase):
+    """YouTube Shorts served through the /snips endpoints."""
+
+    def setUp(self):
+        self.client = APIClient()
+        self.user = User.objects.create_user(username="snip_yt", password="pw")
+        self.other = User.objects.create_user(username="snip_author", password="pw")
+
+    def test_watch_snip_serves_live_youtube_short(self):
+        self.mock_api()
+        resp = self.client.get("/media/snip/watch/?id=dQw4w9WgXcQ")
+        self.assertEqual(resp.status_code, 200)
+        self.assertEqual(resp.data["id"], "dQw4w9WgXcQ")
+        self.assertEqual(resp.data["source_type"], "YOUTUBE")
+        self.assertEqual(resp.data["youtube_video_id"], "dQw4w9WgXcQ")
+        self.assertEqual(resp.data["embed_url"], "https://www.youtube.com/embed/dQw4w9WgXcQ")
+        self.assertIsNone(resp.data["author_id"])
+        self.assertIn("i.ytimg.com", resp.data["thumbnail"])
+        # YouTube likes and CreekTube likes are exposed separately.
+        self.assertIn("youtube_like_count", resp.data)
+        self.assertIn("creek_like_count", resp.data)
+
+    def test_snip_feed_includes_youtube_shorts(self):
+        self.mock_api()
+        Snip.objects.create(
+            author=self.other, title="native_snip", description="",
+            video="native.mp4", thumbnail="", visibility="public",
+            is_approved=True,
+        )
+        resp = self.client.get("/media/snip/feed/")
+        self.assertEqual(resp.status_code, 200)
+        self.assertTrue(resp.data["count"] > 0)
+        yt_items = [item for item in resp.data["results"] if item.get("source_type") == "YOUTUBE"]
+        self.assertTrue(len(yt_items) > 0)
+        first = yt_items[0]
+        self.assertEqual(first["source_type"], "YOUTUBE")
+        self.assertIn(first["youtube_video_id"], VALID_YT_IDS)
+        self.assertEqual(first["embed_url"], f"https://www.youtube.com/embed/{first['youtube_video_id']}")
+        # Live items carry both the real YouTube like count and creek state.
+        self.assertGreaterEqual(first["youtube_like_count"], 0)
+        self.assertGreaterEqual(first["creek_like_count"], 0)
+        self.assertIs(first["is_liked"], False)
+
+    def test_snip_feed_without_api_key_is_native_only(self):
+        with mock.patch.object(youtube_module, "_api_key", return_value=""):
+            Snip.objects.create(
+                author=self.other, title="native_only", description="",
+                video="native.mp4", thumbnail="", visibility="public",
+                is_approved=True,
+            )
+            resp = self.client.get("/media/snip/feed/")
+        self.assertEqual(resp.status_code, 200)
+        for item in resp.data["results"]:
+            self.assertNotEqual(item.get("source_type"), "YOUTUBE")
+        self.assertIn("native_only", [item["title"] for item in resp.data["results"]])
+
+    def test_snip_comments_live_youtube_are_served(self):
+        self.mock_api()
+        resp = self.client.get("/media/snip/comments/?snip_id=dQw4w9WgXcQ")
+        self.assertEqual(resp.status_code, 200)
+        self.assertIsInstance(resp.data, list)
+
+    def test_snip_comment_submit_on_live_youtube_rejected(self):
+        self.mock_api()
+        self.client.force_authenticate(user=self.user)
+        resp = self.client.post("/media/snip/comment/", {"snip_id": "dQw4w9WgXcQ", "comment": "hi"})
+        self.assertEqual(resp.status_code, 400)
+
+    def test_like_on_live_youtube_short_is_saved(self):
+        self.mock_api()
+        self.client.force_authenticate(user=self.user)
+        resp = self.client.post("/media/snip/like/", {"id": "dQw4w9WgXcQ"})
+        self.assertEqual(resp.status_code, 201)
+        self.assertIs(resp.data["is_liked"], True)
+        # A stored row is materialized so the creek like persists.
+        self.assertTrue(Video.objects.filter(youtube_video_id="dQw4w9WgXcQ").exists())
+        resp = self.client.post("/media/snip/like/", {"id": "dQw4w9WgXcQ"})
+        self.assertEqual(resp.status_code, 200)
+        self.assertIs(resp.data["is_liked"], False)
+
+    def test_like_does_not_reassign_author_or_date(self):
+        """Liking a YouTube short must not claim it or reset its publish date."""
+        self.mock_api()
+        self.client.force_authenticate(user=self.user)
+        self.client.post("/media/snip/like/", {"id": "dQw4w9WgXcQ"})
+
+        row = Video.objects.get(youtube_video_id="dQw4w9WgXcQ")
+        # The row is owned by the reserved system account, never the liker.
+        self.assertEqual(row.author.username, YOUTUBE_SYSTEM_USERNAME)
+        # The real publish date is preserved, not reset to "now".
+        self.assertEqual(row.timestamp.date().isoformat(), "2024-01-01")
+
+        # The serialized row shows the real channel as author and is addressed
+        # by its YouTube ID so links keep working exactly like live items.
+        serialized = VideoSerializer(row, context={"request": None}).data
+        self.assertEqual(serialized["author"], "Fake Channel")
+        self.assertEqual(serialized["id"], "dQw4w9WgXcQ")
+        self.assertEqual(serialized["timestamp"][:10], "2024-01-01")
+
+    def test_liked_youtube_video_is_not_duplicated_on_homepage(self):
+        self.mock_api()
+        self.client.force_authenticate(user=self.user)
+        self.client.post("/media/pikevideo/", {"id": "aaaaaaaaaaa"})
+
+        home = self.client.get("/media/logingetvideo/")
+        self.assertEqual(home.status_code, 200)
+        results = home.data["results"]
+        # The materialized row must not appear as a native duplicate.
+        self.assertEqual(
+            [v for v in results if v.get("author") == self.user.username],
+            [],
+        )
+        # The video is only present through its live feed item, with the real
+        # channel name.
+        live = [v for v in results if v.get("youtube_video_id") == "aaaaaaaaaaa"]
+        self.assertEqual(len(live), 1)
+        self.assertEqual(live[0]["author"], "Fake Channel")
+
+    def test_trackretention_on_live_youtube_short_is_ok(self):
+        self.client.force_authenticate(user=self.user)
+        resp = self.client.post("/media/snip/trackretention/", {"snip_id": "dQw4w9WgXcQ", "duration": 30})
+        self.assertEqual(resp.status_code, 200)
+
+    def test_channel_snips_type_uses_short_filter(self):
+        self.mock_api()
+        resp = self.client.get(
+            "/media/youtube/channel/",
+            {"channel_id": "UCabcdefghijklmnopqrstuv", "type": "snips"},
+        )
+        self.assertEqual(resp.status_code, 200)
+        self.assertEqual(resp.data["type"], "snips")
+
+
+# ---------------------------------------------------------------------------
+# ensure_category race-safety
+# ---------------------------------------------------------------------------
+class EnsureCategoryTests(TestCase):
+    def test_existing_slug_is_returned(self):
+        cat = CategoryVideo.objects.create(slug="music", name="Music")
+        self.assertEqual(ensure_category("music"), cat)
+
+    def test_existing_name_is_reused_under_different_slug(self):
+        existing = CategoryVideo.objects.create(slug="news-and-politics", name="News & Politics")
+        got = ensure_category("news-and-politics", name="News & Politics")
+        self.assertEqual(got.id, existing.id)
+        self.assertEqual(CategoryVideo.objects.filter(name="News & Politics").count(), 1)
+
+    def test_duplicate_name_is_returned_not_duplicated(self):
+        existing = CategoryVideo.objects.create(slug="news-and-politics", name="News & Politics")
+        got = ensure_category("news-and-politics", name="News & Politics")
+        self.assertEqual(got.id, existing.id)
+        self.assertEqual(CategoryVideo.objects.count(), 1)
+
+    def test_racing_create_is_recovered(self):
+        existing = CategoryVideo.objects.create(slug="sports", name="Sports")
+        real_filter = CategoryVideo.objects.filter
+        state = {"calls": 0}
+
+        def fake_first(*args, **kwargs):
+            state["calls"] += 1
+            # Pre-checks miss, the post-IntegrityError refetch hits.
+            return existing if state["calls"] >= 3 else None
+
+        def fake_filter(*args, **kwargs):
+            qs = real_filter(*args, **kwargs)
+            qs.first = fake_first
+            return qs
+
+        with mock.patch.object(CategoryVideo.objects, "create", side_effect=IntegrityError("dup")), \
+             mock.patch.object(CategoryVideo.objects, "filter", side_effect=fake_filter):
+            got = ensure_category("sports", name="Sports")
+        self.assertEqual(got.id, existing.id)
+
+
+# ---------------------------------------------------------------------------
+# recent_watch_keywords discovery-phrase extraction
+# ---------------------------------------------------------------------------
+class RecentWatchKeywordTests(TestCase):
+    def setUp(self):
+        self.user = User.objects.create_user(username="kw_user", password="pw")
+        self.other = User.objects.create_user(username="kw_author", password="pw")
+        self.music = CategoryVideo.objects.create(name="Music", slug="music")
+
+    def test_watch_query_phrase_keeps_leading_title_segment(self):
+        from .views import _watch_query_phrase
+        self.assertEqual(
+            _watch_query_phrase("Sweater Weather - The NeighbourHood Lyrics Video"),
+            "sweater weather",
+        )
+
+    def test_recent_watch_keywords_yield_phrase_not_bare_first_word(self):
+        video = make_video(
+            self.other, self.music,
+            title="Sweater Weather - The NeighbourHood Lyrics Video",
+        )
+        make_watch_event(self.user, video)
+        self.assertEqual(recent_watch_keywords(self.user), ["sweater weather"])
+        self.assertNotIn("sweater", recent_watch_keywords(self.user))
+
+    def test_recent_watch_keywords_prefer_youtube_channel_name(self):
+        Video.objects.create(
+            author=self.other,
+            category=self.music,
+            title="Sweater Weather - The NeighbourHood Lyrics Video",
+            description="desc",
+            is_approved=True,
+            source_type="YOUTUBE",
+            youtube_video_id="dQw4w9WgXcQ",
+            youtube_channel_name="The Neighbourhood",
+        )
+        video = Video.objects.get(youtube_video_id="dQw4w9WgXcQ")
+        make_watch_event(self.user, video)
+        self.assertEqual(
+            recent_watch_keywords(self.user),
+            ["the neighbourhood", "sweater weather"],
+        )
+
+
+# ---------------------------------------------------------------------------
 # Hashtag tags: extraction, learning, ranking, interest page
 # ---------------------------------------------------------------------------
 class TagFeatureTests(TestCase):
@@ -500,6 +1275,12 @@ class TagFeatureTests(TestCase):
         self.assertEqual(resp.data["tag"], "music")
         self.assertEqual(len(resp.data["videos"]), 1)
         self.assertEqual(len(resp.data["snips"]), 1)
+
+    def test_following_feed_does_not_need_tags(self):
+        # Sanity: LoginGetVideo without any tags still returns 200.
+        self.client.force_authenticate(user=self.user)
+        resp = self.client.get("/media/logingetvideo/")
+        self.assertEqual(resp.status_code, 200)
 
 
 # ---------------------------------------------------------------------------
@@ -561,3 +1342,108 @@ class AdminTitleTests(TestCase):
     def test_anonymous_cannot_create_titles(self):
         resp = self.client.post("/media/admin-titles/", {"name": "Rogue", "permissions": []})
         self.assertIn(resp.status_code, (401, 403))
+
+
+# ---------------------------------------------------------------------------
+# YouTube channel creeks (read-only subscriptions)
+# ---------------------------------------------------------------------------
+class YouTubeFollowTests(TestCase):
+    def setUp(self):
+        self.client = APIClient()
+        self.user = User.objects.create_user(username="follow_user", password="pw")
+        self.client.force_authenticate(user=self.user)
+
+    def test_creek_channel_toggle_and_list(self):
+        payload = {
+            "channel_id": "UCabcdefghijklmnopqrstuv",
+            "channel_name": "Fake Channel",
+            "channel_thumbnail": "http://thumb/1.jpg",
+            "channel_handle": "@fakechannel",
+        }
+        resp = self.client.post("/media/creek-youtube-channel/", payload)
+        self.assertEqual(resp.status_code, 201)
+        self.assertTrue(resp.data["creek"])
+        self.assertEqual(
+            YouTubeChannelFollow.objects.filter(user=self.user, channel_id=payload["channel_id"]).count(), 1
+        )
+
+        follows = self.client.get("/media/youtube-follows/")
+        self.assertEqual(follows.status_code, 200)
+        self.assertEqual(len(follows.data), 1)
+        self.assertEqual(follows.data[0]["channel_name"], "Fake Channel")
+        self.assertEqual(follows.data[0]["channel_handle"], "fakechannel")
+
+        resp = self.client.post("/media/creek-youtube-channel/", {"channel_id": payload["channel_id"]})
+        self.assertEqual(resp.data["creek"], False)
+        self.assertEqual(YouTubeChannelFollow.objects.filter(user=self.user).count(), 0)
+
+    def test_creek_rejects_invalid_channel_id(self):
+        resp = self.client.post("/media/creek-youtube-channel/", {"channel_id": "not-valid"})
+        self.assertEqual(resp.status_code, 400)
+
+    def test_following_feed_mixes_followed_channel_videos(self):
+        from . import views as views_module
+        author = User.objects.create_user(username="creator_a", password="pw")
+        cat = CategoryVideo.objects.create(name="Music", slug="music")
+        make_video(author, cat, is_approved=True, title="native")
+        Creek.objects.create(author=self.user, account=MediaProfile.objects.get_or_create(user=author)[0])
+        YouTubeChannelFollow.objects.create(
+            user=self.user, channel_id="UCabcdefghijklmnopqrstuv", channel_name="Fake Channel",
+        )
+        fake_yt = {"id": "yt1", "source_type": "YOUTUBE", "title": "YT upload",
+                   "thumbnail": "http://thumb/yt.jpg", "author": "Fake Channel",
+                   "category": "music", "category_name": "Music",
+                   "timestamp": "2024-01-01T00:00:00Z"}
+        with mock.patch.object(views_module, "build_youtube_feed", return_value=[]), \
+             mock.patch.object(views_module, "youtube_channel_videos", return_value=[fake_yt]):
+            resp = self.client.get("/media/logingetvideo/?feed=following")
+        self.assertEqual(resp.status_code, 200)
+        ids = [v["id"] for v in resp.data["results"]]
+        self.assertIn("yt1", ids)
+        self.assertTrue(any(v["source_type"] == "YOUTUBE" for v in resp.data["results"]))
+
+
+# ---------------------------------------------------------------------------
+# Cross-source related videos (native <-> YouTube)
+# ---------------------------------------------------------------------------
+class CrossSourceRelatedTests(TestCase):
+    def setUp(self):
+        self.user = User.objects.create_user(username="rel_user", password="pw")
+        self.other = User.objects.create_user(username="rel_author", password="pw")
+        self.music = CategoryVideo.objects.create(name="Music", slug="music")
+
+    def test_native_video_mixes_youtube_related(self):
+        from . import views as views_module
+        from .tags import apply_tags
+        video = make_video(self.other, self.music, title="Native #theneighbourhood")
+        apply_tags(video, video.title, video.description)
+        fake_yt = {"id": "yt1", "source_type": "YOUTUBE", "title": "YT",
+                   "thumbnail": "", "author": "Ch", "category": "music",
+                   "category_name": "Music", "timestamp": "2024-01-01T00:00:00Z"}
+        with mock.patch.object(views_module, "youtube_search_results", return_value=[{}]), \
+             mock.patch.object(views_module, "youtube_feed_item", return_value=fake_yt), \
+             mock.patch.object(views_module, "_attach_youtube_enrichment"):
+            related = views_module.related_youtube_for(video, limit=4)
+        self.assertEqual([r["id"] for r in related], ["yt1"])
+
+    def test_mixed_related_serializes_native_rows(self):
+        from . import views as views_module
+        from rest_framework.test import APIRequestFactory
+        video = make_video(self.other, self.music, title="Native")
+        req = APIRequestFactory().get("/")
+        related = views_module.mixed_related_videos([video], [], req)
+        self.assertEqual(len(related), 1)
+        self.assertEqual(related[0]["id"], video.pk)
+        self.assertEqual(related[0]["source_type"], "CREEKTUBE")
+
+    def test_youtube_row_gets_native_related(self):
+        from . import views as views_module
+        native = make_video(self.other, self.music, title="Native")
+        yt = Video.objects.create(
+            author=self.other, category=self.music, title="YT",
+            description="", is_approved=True, source_type="YOUTUBE",
+            youtube_video_id="dQw4w9WgXcQ",
+        )
+        related = views_module.related_native_for(yt, limit=6)
+        self.assertEqual([v.id for v in related], [native.id])
+

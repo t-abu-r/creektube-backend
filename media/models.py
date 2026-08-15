@@ -1,5 +1,6 @@
 from django.db import models
 from django.contrib.auth.models import User
+from django.utils import timezone
 from cloudinary.models import CloudinaryField
 
 
@@ -131,6 +132,14 @@ class Video(models.Model):
         ("unlisted", "Unlisted"),
         ("private", "Private"),
     ]
+    SOURCE_TYPE_CHOICES = [
+        ("CREEKTUBE", "CreekTube"),
+        ("YOUTUBE", "YouTube"),
+    ]
+    CONTENT_TYPE_CHOICES = [
+        ("VIDEO", "Video"),
+        ("SNIP", "Snip"),
+    ]
 
     author = models.ForeignKey(User, on_delete=models.CASCADE)
     category = models.ForeignKey(
@@ -143,11 +152,17 @@ class Video(models.Model):
     title = models.CharField(max_length=100)
     description = models.TextField()
     thumbnail = models.TextField(blank=True, default="")
-    video = models.TextField()
+    video = models.TextField(blank=True, default="")
+    source_type = models.CharField(max_length=20, choices=SOURCE_TYPE_CHOICES, default="CREEKTUBE")
+    content_type = models.CharField(max_length=10, choices=CONTENT_TYPE_CHOICES, default="VIDEO")
+    duration = models.PositiveIntegerField(default=0, help_text="Length in seconds (0 when unknown)")
+    youtube_video_id = models.CharField(max_length=11, blank=True, default="")
+    youtube_channel_id = models.CharField(max_length=64, blank=True, default="")
+    youtube_channel_name = models.CharField(max_length=255, blank=True, default="")
     video_public_id = models.CharField(max_length=255, blank=True, default="")
     thumbnail_public_id = models.CharField(max_length=255, blank=True, default="")
     visibility = models.CharField(max_length=10, choices=VISIBILITY_CHOICES, default="public")
-    timestamp = models.DateTimeField(auto_now_add=True)
+    timestamp = models.DateTimeField(default=timezone.now)
     is_approved = models.BooleanField(default=False)
     view_count = models.PositiveIntegerField(default=0)
     tags = models.ManyToManyField(Tag, blank=True, related_name="videos")
@@ -175,6 +190,7 @@ class Snip(models.Model):
     is_approved = models.BooleanField(default=False)
     view_count = models.PositiveIntegerField(default=0)
     like_count = models.PositiveIntegerField(default=0)
+    duration = models.PositiveIntegerField(default=0, help_text="Length in seconds (0 when unknown)")
     category = models.ForeignKey(
         CategoryVideo,
         null=True,
@@ -252,6 +268,28 @@ class Creek(models.Model):
 
     def __str__(self):
         return f"{self.author.username} Creeked {self.account.username}"
+
+
+class YouTubeChannelFollow(models.Model):
+    """A CreekTube user "creeking" a YouTube channel.
+
+    YouTube channels are followed by channel ID. They surface in the
+    following feed (read-only) alongside CreekTube creators the user creeks.
+    """
+
+    user = models.ForeignKey(User, on_delete=models.CASCADE, related_name="youtube_channel_follows")
+    channel_id = models.CharField(max_length=64)
+    channel_name = models.CharField(max_length=255, default="")
+    channel_thumbnail = models.TextField(blank=True, default="")
+    channel_handle = models.CharField(max_length=255, blank=True, default="")
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        unique_together = ["user", "channel_id"]
+        ordering = ["-created_at"]
+
+    def __str__(self):
+        return f"{self.user.username} creeks {self.channel_name or self.channel_id}"
 
 
 class WatchEvent(models.Model):

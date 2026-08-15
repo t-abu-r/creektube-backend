@@ -12,10 +12,13 @@ urlpatterns = [
 
     # VIDEO/RELATED UPLOAD!!!!
     path("uploadvideo/", UploadVideo.as_view(), name="UploadVideo"),
+    path("youtube/add/", AddYouTubeVideo.as_view(), name="AddYouTubeVideo"),
     path("uploadcommentvideo/", UploadCommentVideo.as_view(), name="UploadCommentVideo"),
     path("pikevideo/", PikeVideo.as_view(), name="PikeVideo"),
     path("dispikevideo/", DisPikeVideo.as_view(), name="DisPikeVideo"),
     path("creekaccount/", CreekAccount.as_view(), name="CreekAccount"),
+    path("creek-youtube-channel/", CreekYouTubeChannel.as_view(), name="CreekYouTubeChannel"),
+    path("youtube-follows/", YouTubeFollows.as_view(), name="YouTubeFollows"),
 
 
     path("categories/", Categories.as_view(), name="Categories"),
@@ -23,6 +26,7 @@ urlpatterns = [
     path("interests/<str:tag>/", InterestTag.as_view(), name="InterestTag"),
     path("comment/", CommentVideo.as_view(), name="CommentVideo"),
     path("pincomment/", PinComment.as_view(), name="PinComment"),
+    path("youtube/channel/", YouTubeChannel.as_view(), name="YouTubeChannel"),
     # MOD PANEL
     path("mod-panel/", ModPanel.as_view()),
     path("set-account-active/", SetAccountActive.as_view(), name="SetAccountActive"),

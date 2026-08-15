@@ -146,6 +146,26 @@ CLOUDINARY_STORAGE = {
     'API_SECRET': os.environ.get('CLOUDINARY_API_SECRET')
 }
 
+# YouTube Data API (optional). Used to enrich metadata when creators add
+# YouTube videos. Missing key = graceful fallback, native behavior unchanged.
+YOUTUBE_API_KEY = os.environ.get("YOUTUBE_API_KEY", "")
+
+# Shared YouTube result cache. Redis is used when REDIS_URL is present so
+# feed/search results survive worker restarts and are shared across serverless
+# instances; otherwise the in-process cache keeps behavior unchanged.
+YOUTUBE_SHARED_CACHE = bool(os.environ.get("REDIS_URL"))
+CACHES = {
+    "default": {
+        "BACKEND": "django.core.cache.backends.locmem.LocMemCache",
+    },
+    "youtube": {
+        "BACKEND": "django.core.cache.backends.redis.RedisCache",
+        "LOCATION": os.environ.get("REDIS_URL", "redis://localhost:6379"),
+    } if os.environ.get("REDIS_URL") else {
+        "BACKEND": "django.core.cache.backends.locmem.LocMemCache",
+    },
+}
+
 # Jazzmin admin settings
 JAZZMIN_SETTINGS = {
     "site_title": "CreekTube Admin",

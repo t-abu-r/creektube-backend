@@ -6,17 +6,28 @@ from rest_framework.response import Response
 from rest_framework.status import HTTP_400_BAD_REQUEST
 from rest_framework.views import APIView
 from django.utils import timezone
-from django.contrib.auth.models import User
 from .permissions import IsModerator, IsSuperUser
 from .Serializers import *
 from accounts.serializers import ProfileSerializer
 from .models import (Video, Comment, CommentLike, CategoryVideo, MediaProfile, Like,
                      DisPike, Creek, WatchEvent, UploadRateLimit, Notification, Snip, SnipLike,
-                     ModActionLog, UserTitle)
-from .tags import apply_tags, tag_names_for
+                     ModActionLog, UserTitle, YouTubeChannelFollow, Tag)
 from django.db.models import Count, Q, Sum, Avg, F, Max
+from django.db import IntegrityError
 from . import ranking
+from .youtube import (normalize_youtube_url, get_video_metadata, youtube_thumbnail_url,
+                      validate_youtube_id, build_youtube_feed, get_youtube_video_details,
+                      youtube_related_videos, youtube_search_channels,
+                      youtube_duration_seconds, youtube_search_videos,
+                      youtube_comments, youtube_like_counts_for, youtube_channel,
+                      youtube_channel_videos, validate_youtube_channel_id,
+                      build_youtube_snips_feed, youtube_embed_url, youtube_system_user,
+                      youtube_search_results, youtube_feed_item, _attach_youtube_enrichment,
+                      youtube_api_status, YOUTUBE_SYSTEM_USERNAME)
+from .content import classify_content_type
+from .tags import apply_tags, extract_hashtags, tag_names_for
 import logging
+import re
 from django.db.models.functions import TruncDate
 logger = logging.getLogger(__name__)
 from django.views.decorators.csrf import csrf_exempt
@@ -34,7 +45,6 @@ VIEW_GAP = timedelta(minutes=2)  # min time between views from same user on same
 VIEW_MAX_PER_USER = 6  # max views per user per video/snip
 COMMENT_SPAM_LIMIT = 6  # max comments per video
 COMMENT_SPAM_WINDOW = timedelta(minutes=2)
-YOUTUBE_SYSTEM_USERNAME = "youtube_system"  # videos from this account are hidden from public feeds
 
 # ---------------------------------------------------------------------------
 # Admin titles: the permission catalog that titles can carry.
@@ -129,6 +139,50 @@ def check_comment_spam(user, video):
     return recent < COMMENT_SPAM_LIMIT
 
 
+def ensure_category(slug, name=""):
+    """Return the CategoryVideo row for ``slug``, creating it if needed.
+
+    Safe under concurrent requests (serverless runs many Lambda workers): it
+    falls back to an existing row with the same display name, and re-fetches
+    when a racing create loses the unique constraint.
+    """
+    if not slug:
+        return None
+    name = (name or slug.replace("-", " ").title()).strip()
+    category = CategoryVideo.objects.filter(slug=slug).first()
+    if category:
+        return category
+    # A different slug may already carry this display name (e.g. the API
+    # reporting "News & Politics" under several slugs at once).
+    category = CategoryVideo.objects.filter(name__iexact=name).first()
+    if category:
+        return category
+    try:
+        return CategoryVideo.objects.create(slug=slug, name=name)
+    except IntegrityError:
+        # A concurrent request just created it; fetch whichever row won.
+        return (
+            CategoryVideo.objects.filter(slug=slug).first()
+            or CategoryVideo.objects.filter(name__iexact=name).first()
+        )
+
+
+def record_category_interest(user, category_slug, boost=ranking.WATCH_BOOST):
+    """Boost a user's interest score for ``category_slug`` after a watch.
+
+    This is what makes the home feed adapt: ``profile.categories`` drives both
+    the native ranking and the YouTube query pool, so watching content in a
+    category surfaces more of that category on the homepage.
+    """
+    if not user or not user.is_authenticated or not category_slug:
+        return
+    profile, _ = MediaProfile.objects.get_or_create(user=user)
+    profile.categories = ranking.adjust_category_score(
+        profile.categories, category_slug, boost
+    )
+    profile.save()
+
+
 def record_tag_interest(user, tag_names, boost=ranking.TAG_BOOST):
     """Boost a user's tag-interest scores for ``tag_names`` after a watch.
 
@@ -153,6 +207,357 @@ def record_tag_interest_from_watch(user, video=None, snip=None):
         record_tag_interest(user, tag_names_for(video))
     elif snip is not None:
         record_tag_interest(user, tag_names_for(snip))
+
+
+def boost_youtube_watch_interest(user, video):
+    """Learn the YouTube category for a stored but uncategorized YouTube row."""
+    if not video or video.source_type != "YOUTUBE" or not video.youtube_video_id:
+        return
+    yt_item = get_youtube_video_details(video.youtube_video_id) or {}
+    if not yt_item.get("category"):
+        return
+    category = ensure_category(yt_item["category"], yt_item.get("category_name") or "")
+    if category:
+        Video.objects.filter(pk=video.pk).update(category=category)
+        video.category = category
+        record_category_interest(user, category.slug)
+
+
+def ensure_youtube_video(video_id, user=None):
+    """Get-or-create a lightweight stored Video row for a live YouTube ID.
+
+    CreekTube likes/comments are stored against a Video row, so a YouTube
+    video that isn't already part of CreekTube is materialized as a public,
+    pre-approved YOUTUBE row the first time a user interacts with it. The
+    video itself is never downloaded: only metadata + the ID are persisted.
+    """
+    if not validate_youtube_id(video_id):
+        return None
+    video = Video.objects.filter(youtube_video_id=video_id).first()
+    if video:
+        return video
+    metadata = get_video_metadata(video_id) or {}
+    details = get_youtube_video_details(video_id) or {}
+    category = None
+    if metadata.get("category"):
+        category = ensure_category(
+            metadata["category"],
+            metadata.get("category_name") or "",
+        )
+    published = _epoch(details.get("timestamp")) or None
+    if published:
+        from datetime import datetime, timezone as dt_timezone
+        timestamp = datetime.fromtimestamp(published, tz=dt_timezone.utc)
+    else:
+        timestamp = timezone.now()
+    try:
+        video = Video.objects.create(
+            author=youtube_system_user(),
+            category=category,
+            title=metadata.get("title") or details.get("title") or "YouTube video",
+            description=metadata.get("description") or "",
+            thumbnail=youtube_thumbnail_url(video_id),
+            video="",
+            source_type="YOUTUBE",
+            youtube_video_id=video_id,
+            youtube_channel_id=metadata.get("channel_id") or details.get("youtube_channel_id") or "",
+            youtube_channel_name=metadata.get("channel_name") or details.get("author") or "",
+            visibility="public",
+            timestamp=timestamp,
+            is_approved=True,
+            duration=details.get("duration") or 0,
+            content_type=classify_content_type(details.get("duration") or 0),
+        )
+    except Exception as exc:
+        logger.warning("ensure_youtube_video failed for %s: %s", video_id, exc)
+        return None
+    apply_tags(video, video.title, video.description)
+    return video
+
+
+def youtube_snip_like_state(request, video_id):
+    """Return ``(is_liked, like_count, youtube_like_count, creek_like_count)``.
+
+    CreekTube likes on YouTube Shorts are stored against the lightweight
+    YOUTUBE Video row (via the ``Like`` model) so they persist, while the
+    heart count always mirrors the real YouTube like count.
+    """
+    user = request.user if getattr(request.user, "is_authenticated", False) else None
+    video = ensure_youtube_video(video_id, user)
+    if not video:
+        return False, 0, 0, 0
+    creek_like_count = Like.objects.filter(video=video).count()
+    yt_like_count = youtube_like_counts_for([video_id]).get(video_id, 0)
+    is_liked = (
+        user is not None
+        and Like.objects.filter(video=video, author=request.user).exists()
+    )
+    return is_liked, yt_like_count + creek_like_count, yt_like_count, creek_like_count
+
+
+# ---------------------------
+# Hybrid feed mixing (CreekTube + YouTube)
+# ---------------------------
+HYBRID_YOUTUBE_RATIO = 4  # 1 YouTube item every 4 slots
+HYBRID_YOUTUBE_DEFAULT_FRACTION = 0.25
+HYBRID_YOUTUBE_MIN_FRACTION = 0.16
+HYBRID_YOUTUBE_MAX_RATIO = 6
+
+
+def recent_type_mix(user, window=40):
+    """Fraction (0..1) of a user's recent watches that were YouTube.
+
+    Drives the adaptive blend: the more of one type the user watches, the
+    more of it appears on top — while the interleaver still guarantees the
+    other type never disappears entirely.
+    """
+    if not user or not user.is_authenticated:
+        return HYBRID_YOUTUBE_DEFAULT_FRACTION
+    recent = list(
+        WatchEvent.objects.filter(user=user, video__isnull=False)
+        .select_related("video")
+        .order_by("-timestamp")[:window]
+    )
+    if not recent:
+        return HYBRID_YOUTUBE_DEFAULT_FRACTION
+    youtube = sum(1 for event in recent if event.video.source_type == "YOUTUBE")
+    fraction = youtube / len(recent)
+    # Never fully exclude either type from the feed.
+    return min(0.6, max(HYBRID_YOUTUBE_MIN_FRACTION, fraction))
+
+
+def adaptive_youtube_ratio(user):
+    """Native slots per YouTube slot, adapted to the user's watch mix."""
+    fraction = recent_type_mix(user)
+    if fraction <= 0:
+        return HYBRID_YOUTUBE_RATIO
+    ratio = int(round(1 / fraction))
+    return max(1, min(HYBRID_YOUTUBE_MAX_RATIO, ratio))
+
+
+def build_youtube_follows_feed(user, limit=20, shorts=False):
+    """Live YouTube videos from channels the user creeks (read-only).
+
+    Only works when the YouTube API key is configured; otherwise returns an
+    empty list so the following feed keeps working with Creektube creators.
+    """
+    if not user or not user.is_authenticated:
+        return []
+    follows = list(YouTubeChannelFollow.objects.filter(user=user)[:20])
+    if not follows:
+        return []
+    items = []
+    seen = set()
+    for follow in follows:
+        for item in youtube_channel_videos(follow.channel_id, limit=5, duration="short" if shorts else "any"):
+            if item["id"] in seen:
+                continue
+            seen.add(item["id"])
+            items.append(item)
+        if len(items) >= limit:
+            break
+    return items[:limit]
+
+
+def interleave_feed(native_items, youtube_items, ratio=HYBRID_YOUTUBE_RATIO):
+    """Blend native and live-YouTube items into a single ordered list.
+
+    Every ``ratio`` positions a YouTube item is inserted between native
+    items, so the mixed feed reads naturally and neither source type can
+    disappear. Either input may be empty.
+    """
+    combined = []
+    ct_idx = 0
+    yt_idx = 0
+    while ct_idx < len(native_items) or yt_idx < len(youtube_items):
+        for _ in range(ratio):
+            if ct_idx < len(native_items):
+                combined.append(native_items[ct_idx])
+                ct_idx += 1
+        if yt_idx < len(youtube_items):
+            combined.append(youtube_items[yt_idx])
+            yt_idx += 1
+    return combined
+
+
+def resolve_video_by_id(video_id, queryset):
+    """Resolve a video by primary key or stored YouTube ID.
+
+    Returns ``None`` when the row doesn't exist. Non-numeric IDs (like live
+    YouTube IDs that aren't stored) never raise a ValueError.
+    """
+    video = None
+    if validate_youtube_id(video_id):
+        video = queryset.filter(youtube_video_id=video_id).first()
+    if video is None:
+        try:
+            video = queryset.filter(pk=video_id).first()
+        except (ValueError, TypeError):
+            return None
+    return video
+
+
+def related_youtube_for(native_video, limit=6):
+    """Live YouTube videos related to a native CreekTube video.
+
+    Queries by the video's hashtags first (strongest signal), then its
+    category, so CreekTube and YouTube content cross-pollinate. A single
+    query is used so the 100-unit search endpoint is never wasted on a low
+    yield page.
+    """
+    if native_video is None:
+        return []
+    tags = [t.name for t in native_video.tags.all()[:3]]
+    queries = tags[:1]
+    if not queries and native_video.category:
+        queries.append(native_video.category.slug.replace("-", " "))
+    items = []
+    seen = set()
+    for query in queries:
+        for raw in youtube_search_results(query, max_results=limit + 2):
+            item = youtube_feed_item(raw)
+            if not item or item["id"] in seen:
+                continue
+            seen.add(item["id"])
+            items.append(item)
+        if len(items) >= limit:
+            break
+    if items:
+        _attach_youtube_enrichment(items)
+    return items[:limit]
+
+
+def related_native_for(video, category_hint=None, limit=6):
+    """Native CreekTube videos related to a (possibly live) YouTube video.
+
+    Matches the materialized row's tags first, then category; ``category_hint``
+    is used for live YouTube videos that have no stored row yet.
+    """
+    qs = (
+        Video.objects.filter(is_approved=True, visibility="public", author__is_active=True)
+        .exclude(source_type="YOUTUBE", author__username=YOUTUBE_SYSTEM_USERNAME)
+    )
+    tag_ids = [t.id for t in video.tags.all()[:3]] if video is not None else []
+    if tag_ids:
+        matched = list(
+            qs.filter(tags__in=tag_ids)
+            .exclude(id=video.id)
+            .distinct()
+            .order_by("-timestamp")[:limit]
+        )
+        if matched:
+            return matched
+    category_slug = (
+        video.category.slug if video is not None and video.category else category_hint
+    )
+    if category_slug:
+        return list(
+            qs.filter(category__slug=category_slug)
+            .exclude(id=video.id if video is not None else -1)
+            .order_by("-timestamp")[:limit]
+        )
+    return []
+
+
+def mixed_related_videos(native_items, youtube_items, request):
+    """Serialize a mixed related list (Video objects + YouTube dicts)."""
+    objects = [item for item in native_items if isinstance(item, Video)]
+    object_data = {}
+    if objects:
+        serializer = VideoSerializer(objects, many=True, context={"request": request})
+        object_data = {obj.id: data for obj, data in zip(objects, serializer.data)}
+    combined = []
+    for item in native_items + youtube_items:
+        if isinstance(item, Video):
+            data = object_data.get(item.id)
+        else:
+            data = item
+        if data:
+            combined.append(data)
+    return combined[:12]
+
+
+def serialize_mixed_items(items, request):
+    """Serialize a mixed list of Video objects and pre-shaped dicts."""
+    objects = [item for item in items if isinstance(item, Video)]
+    object_data = {}
+    if objects:
+        serializer = VideoSerializer(objects, many=True, context={'request': request})
+        object_data = {obj.id: data for obj, data in zip(objects, serializer.data)}
+    return [object_data.get(item.id) if isinstance(item, Video) else item for item in items]
+
+
+def _epoch(value):
+    """Parse a serialized timestamp (ISO string, epoch number, or datetime) into epoch seconds."""
+    if not value:
+        return 0.0
+    if isinstance(value, (int, float)):
+        return float(value)
+    try:
+        from datetime import datetime, timezone
+
+        parsed = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+        if parsed.tzinfo is None:
+            parsed = parsed.replace(tzinfo=timezone.utc)
+        return parsed.timestamp()
+    except Exception:
+        return 0.0
+
+
+_WATCH_QUERY_STOPWORDS = {
+    "the", "and", "for", "with", "that", "this", "your", "you", "are", "was",
+    "were", "not", "but", "from", "they", "their", "them", "video", "videos",
+    "official", "lyrics", "lyric", "music", "audio", "song", "full", "hd",
+    "4k", "new", "mix", "remix", "edit", "cover", "live", "album", "single",
+    "track", "feat", "ft", "featuring", "part", "version", "visualizer",
+    "clip", "movie", "slowed", "reverb", "best", "top", "ultimate",
+}
+
+
+def _watch_query_phrase(title):
+    """Reduce a watched title to a useful YouTube discovery phrase.
+
+    Keeps the leading title segment (before artist/suffix separators) and
+    drops filler tokens, so "Sweater Weather - The NeighbourHood Lyrics Video"
+    yields "sweater weather" instead of the naive bare word "sweater".
+    """
+    if not title:
+        return ""
+    lead = re.split(r"\s*[-–—|·]\s*", title)[0]
+    words = [
+        w for w in lead.split()
+        if "".join(ch for ch in w.lower() if ch.isalnum()) not in _WATCH_QUERY_STOPWORDS
+    ]
+    return " ".join(words).strip().lower()[:64]
+
+
+def recent_watch_keywords(user, limit=3):
+    """Derive up to ``limit`` discovery phrases from a user's recent watches.
+
+    The most recent video/snip titles are turned into full query phrases (not
+    single words) so a watch of "Sweater Weather" surfaces the song rather
+    than unrelated "sweater" results. Stored YouTube rows contribute their
+    channel name, which is usually the strongest discovery signal.
+    """
+    if not user or not user.is_authenticated:
+        return []
+    events = (WatchEvent.objects.filter(user=user)
+              .select_related("video", "snip")
+              .order_by("-timestamp")[:12])
+    keywords = []
+    for event in events:
+        video = event.video
+        if video and video.source_type == "YOUTUBE" and video.youtube_channel_name:
+            channel = video.youtube_channel_name.strip().lower()
+            if channel and channel not in keywords:
+                keywords.append(channel)
+        title = video.title if video else (event.snip.title if event.snip else "")
+        phrase = _watch_query_phrase(title)
+        if phrase and phrase not in keywords:
+            keywords.append(phrase)
+        if len(keywords) >= limit:
+            break
+    return keywords[:limit]
 
 
 # ---------------------------
@@ -203,21 +608,10 @@ class LoginGetVideo(APIView):
                 )
                 snips = snips.filter(author_id__in=creeked_ids)
             if sort == 'views':
-                snips = snips.order_by('-view_count')
+                native_items = list(snips.order_by('-view_count'))
             else:
-                snips = snips.order_by('-timestamp')
-            total = snips.count()
-            try:
-                page = max(int(request.query_params.get('page', 1)), 1)
-            except (TypeError, ValueError):
-                page = 1
-            try:
-                page_size = min(max(int(request.query_params.get('page_size', 20)), 1), 100)
-            except (TypeError, ValueError):
-                page_size = 20
+                native_items = list(snips.order_by('-timestamp'))
 
-            start = (page - 1) * page_size
-            page_snips = snips[start:start + page_size]
             results = [
                 {
                     "id": s.id,
@@ -234,17 +628,41 @@ class LoginGetVideo(APIView):
                     "category_name": "Shortform Videos",
                     "view_count": s.view_count,
                     "is_snip": True,
+                    "content_type": "SNIP",
+                    "duration": s.duration,
                 }
-                for s in page_snips
+                for s in native_items
             ]
+
+            # Mix in live YouTube Shorts (unless on the "following" feed,
+            # where only creators the user actually follows make sense).
+            if feed != 'following':
+                results += build_youtube_snips_feed(request.user, limit=40)
+                if sort == 'views':
+                    results.sort(key=lambda item: item.get("view_count") or 0, reverse=True)
+                else:
+                    results.sort(key=lambda item: _epoch(item.get("timestamp")), reverse=True)
+
+            total = len(results)
+            try:
+                page = max(int(request.query_params.get('page', 1)), 1)
+            except (TypeError, ValueError):
+                page = 1
+            try:
+                page_size = min(max(int(request.query_params.get('page_size', 20)), 1), 100)
+            except (TypeError, ValueError):
+                page_size = 20
+
+            start = (page - 1) * page_size
             return Response({
-                "results": results,
+                "results": results[start:start + page_size],
                 "page": page,
                 "page_size": page_size,
                 "count": total,
+                "youtube_error": youtube_api_status(),
             }, status=200)
-
         user_interest = profile.categories
+        user_tag_interests = profile.tags
         creeked_author_ids = set(
             Creek.objects.filter(author=request.user)
             .exclude(account__user__is_active=False)
@@ -253,7 +671,9 @@ class LoginGetVideo(APIView):
 
         approved_videos = (
             Video.objects.filter(is_approved=True, visibility="public", author__is_active=True)
-            .exclude(author__username=YOUTUBE_SYSTEM_USERNAME)
+            # Materialized YouTube rows are bookkeeping for likes/comments; the
+            # live YouTube items already carry that content into the feed.
+            .exclude(source_type="YOUTUBE", author__username=YOUTUBE_SYSTEM_USERNAME)
             .select_related('category')
             .prefetch_related('tags')
             .annotate(
@@ -288,7 +708,7 @@ class LoginGetVideo(APIView):
         ranked = ranking.rank_videos(
             candidates, user_interest, creeked_author_ids,
             cowatch_map=cowatch_map, user_recent_video_ids=user_recent_ids,
-            user_tag_interests=profile.tags, video_tag_map=video_tag_map,
+            user_tag_interests=user_tag_interests, video_tag_map=video_tag_map,
         )
 
         try:
@@ -300,15 +720,30 @@ class LoginGetVideo(APIView):
         except (TypeError, ValueError):
             page_size = 20
 
-        start = (page - 1) * page_size
-        page_videos = ranked[start:start + page_size]
+        youtube_items = build_youtube_feed(
+            user=request.user,
+            interest_categories=user_interest,
+            feed=feed,
+            history_keywords=recent_watch_keywords(request.user),
+            tag_queries=list(user_tag_interests.keys()),
+        )
+        if feed == 'following':
+            # Followed YouTube channels surface in the same following feed.
+            youtube_items = build_youtube_follows_feed(request.user, limit=20) + youtube_items
+        combined = interleave_feed(
+            ranked, youtube_items,
+            ratio=adaptive_youtube_ratio(request.user),
+        )
 
-        serializer = VideoSerializer(page_videos, many=True, context={'request': request})
+        start = (page - 1) * page_size
+        page_videos = combined[start:start + page_size]
+        results = serialize_mixed_items(page_videos, request)
         return Response({
-            "results": serializer.data,
+            "results": results,
             "page": page,
             "page_size": page_size,
-            "count": len(ranked),
+            "count": len(combined),
+            "youtube_error": youtube_api_status(),
         }, status=200)
 
 
@@ -319,7 +754,15 @@ class GuestGetVideo(APIView):
         # Single video by ID (used for SSR/metadata)
         video_id = request.query_params.get('video_id')
         if video_id:
-            video = Video.objects.filter(id=video_id, is_approved=True, visibility="public", author__is_active=True).exclude(author__username=YOUTUBE_SYSTEM_USERNAME).select_related('author').first()
+            video = resolve_video_by_id(
+                video_id,
+                Video.objects.filter(is_approved=True, visibility="public", author__is_active=True).select_related('author'),
+            )
+            if not video and validate_youtube_id(video_id):
+                # A live YouTube ID that isn't stored as a CreekTube row.
+                yt_item = get_youtube_video_details(video_id)
+                if yt_item:
+                    return Response(yt_item, status=200)
             if not video:
                 return Response({"detail": "Video not found"}, status=404)
             serializer = VideoSerializer(video, many=False, context={'request': request})
@@ -331,26 +774,10 @@ class GuestGetVideo(APIView):
         if category_param in ['shortform-videos', 'snips']:
             snips = Snip.objects.filter(is_approved=True, visibility="public", author__is_active=True).select_related('author')
             if sort == 'views':
-                snips = snips.order_by('-view_count')
+                native_items = list(snips.order_by('-view_count'))
             else:
-                snips = snips.order_by('-timestamp')
-            total = snips.count()
-            try:
-                page = max(int(request.query_params.get('page', 1)), 1)
-            except (TypeError, ValueError):
-                page = 1
-            try:
-                page_size = min(max(int(request.query_params.get('page_size', 20)), 1), 100)
-            except (TypeError, ValueError):
-                page_size = 20
+                native_items = list(snips.order_by('-timestamp'))
 
-            start = (page - 1) * page_size
-            page_snips = snips[start:start + page_size]
-            # Serialize Snips
-            snip_serializer = SnipSerializer(page_snips, many=True, context={'request': request})
-
-            # Add avatar
-            # Profile = Profile.objects.filter(user=s.author).first()
             results = [
                 {
                     "id": s.id,
@@ -367,19 +794,41 @@ class GuestGetVideo(APIView):
                     "category_name": "Shortform Videos",
                     "view_count": s.view_count,
                     "is_snip": True,
+                    "content_type": "SNIP",
+                    "duration": s.duration,
                 }
-                for s in snip_serializer.instance
+                for s in native_items
             ]
+
+            # Mix in live YouTube Shorts so the homepage Snips tab matches the
+            # dedicated /snips feed.
+            results += build_youtube_snips_feed(request.user, limit=40)
+            if sort == 'views':
+                results.sort(key=lambda item: item.get("view_count") or 0, reverse=True)
+            else:
+                results.sort(key=lambda item: _epoch(item.get("timestamp")), reverse=True)
+
+            total = len(results)
+            try:
+                page = max(int(request.query_params.get('page', 1)), 1)
+            except (TypeError, ValueError):
+                page = 1
+            try:
+                page_size = min(max(int(request.query_params.get('page_size', 20)), 1), 100)
+            except (TypeError, ValueError):
+                page_size = 20
+
+            start = (page - 1) * page_size
             return Response({
-                "results": results,
+                "results": results[start:start + page_size],
                 "page": page,
                 "page_size": page_size,
                 "count": total,
+                "youtube_error": youtube_api_status(),
             }, status=200)
-
         approved_videos = (
             Video.objects.filter(is_approved=True, visibility="public", author__is_active=True)
-            .exclude(author__username=YOUTUBE_SYSTEM_USERNAME)
+            .exclude(source_type="YOUTUBE", author__username=YOUTUBE_SYSTEM_USERNAME)
             .select_related('category')
             .annotate(
                 num_likes=Count('likes', distinct=True),
@@ -406,15 +855,21 @@ class GuestGetVideo(APIView):
         except (TypeError, ValueError):
             page_size = 20
 
-        start = (page - 1) * page_size
-        page_videos = ranked[start:start + page_size]
+        youtube_items = build_youtube_feed(
+            feed=None,
+            history_keywords=recent_watch_keywords(request.user),
+        )
+        combined = interleave_feed(ranked, youtube_items)
 
-        serializer = VideoSerializer(page_videos, many=True, context={'request': request})
+        start = (page - 1) * page_size
+        page_videos = combined[start:start + page_size]
+        results = serialize_mixed_items(page_videos, request)
         return Response({
-            "results": serializer.data,
+            "results": results,
             "page": page,
             "page_size": page_size,
-            "count": len(ranked),
+            "count": len(combined),
+            "youtube_error": youtube_api_status(),
         }, status=200)
 
 
@@ -548,66 +1003,119 @@ class LoginWatchVideo(APIView):
         if not video_id:
             return Response({"detail": "Video ID not provided"}, status=status.HTTP_400_BAD_REQUEST)
 
+        # Resolve a stored row first: by stored YouTube ID, then by primary key.
+        video = resolve_video_by_id(
+            video_id,
+            Video.objects.filter(is_approved=True, author__is_active=True).prefetch_related("comments__author"),
+        )
+
+        if video is None and validate_youtube_id(video_id):
+            # A live YouTube ID that isn't stored as a CreekTube row: stream it
+            # straight from the YouTube Data API. Also learn its category so the
+            # home feed adapts to what the user actually watches.
+            yt_item = get_youtube_video_details(video_id)
+            if not yt_item:
+                return Response({"detail": "Video not found"}, status=404)
+            if yt_item.get("category"):
+                ensure_category(yt_item["category"], yt_item.get("category_name") or "")
+                record_category_interest(request.user, yt_item["category"])
+            record_tag_interest(
+                request.user,
+                extract_hashtags(yt_item.get("title"), yt_item.get("description")),
+            )
+            return Response({
+                "video": yt_item,
+                "related_videos": youtube_related_videos(video_id),
+                "like": False,
+                "like_count": yt_item.get("like_count", 0),
+                "creek_like_count": 0,
+                "dispike": False,
+                "dispike_count": 0,
+                "creek": False,
+                "creek_count": 0,
+            }, status=status.HTTP_200_OK)
+
+        if video is None:
+            return Response({"detail": "Video not found"}, status=404)
+
         # Allow public + unlisted for everyone, private only for owner
-        video = get_object_or_404(Video.objects.filter(is_approved=True, author__is_active=True).exclude(author__username=YOUTUBE_SYSTEM_USERNAME).prefetch_related("comments__author"), id=video_id)
-        approved_videos = Video.objects.filter(is_approved=True, visibility="public", author__is_active=True).exclude(author__username=YOUTUBE_SYSTEM_USERNAME)
+        approved_videos = Video.objects.filter(is_approved=True, visibility="public", author__is_active=True)
         if video.visibility == "private" and video.author != request.user:
             return Response({"detail": "Video not found"}, status=404)
 
-        # Boost category score
-        profile, _ = MediaProfile.objects.get_or_create(user=request.user)
+        # Boost category score: native category when present, otherwise learn it
+        # from the live YouTube API for stored-but-uncategorized YouTube rows.
         if video.category:
-            profile.categories = ranking.adjust_category_score(
-                profile.categories, video.category.slug, ranking.WATCH_BOOST
-            )
-            profile.save()
+            record_category_interest(request.user, video.category.slug)
+        else:
+            boost_youtube_watch_interest(request.user, video)
 
         # Record watch event with spam prevention
         record_view(request.user, video=video)
         # Learn tag interests so #hashtags outrank the plain category.
         record_tag_interest_from_watch(request.user, video=video)
 
-        # Co-watch powered related videos
-        user_recent_ids = ranking.get_user_recent_video_ids(request.user)
-        if user_recent_ids:
-            cowatch_map = ranking.build_cowatch_map(user_recent_ids, [video.id])
-            # Get co-watch related video IDs, sorted by score
-            sorted_cowatch = sorted(cowatch_map.items(), key=lambda x: x[1], reverse=True)
-            cowatch_video_ids = [vid for vid, _ in sorted_cowatch[:10]]
-            if cowatch_video_ids:
-                cowatch_videos = list(
-                    approved_videos.filter(id__in=cowatch_video_ids)
-                    .select_related('category')
-                    .annotate(
-                        num_likes=Count('likes', distinct=True),
-                        num_dislikes=Count('dispikes', distinct=True),
+        # Cross-source related: YouTube rows add native CreekTube matches and
+        # native rows add live YouTube matches, so both platforms fill gaps.
+        if video.source_type == "YOUTUBE" and video.youtube_video_id:
+            native_related = related_native_for(video, limit=6)
+            youtube_related = youtube_related_videos(video.youtube_video_id)
+            related_videos = mixed_related_videos(native_related, youtube_related, request)
+        elif video.category:
+            # Co-watch powered related videos
+            user_recent_ids = ranking.get_user_recent_video_ids(request.user)
+            if user_recent_ids:
+                cowatch_map = ranking.build_cowatch_map(user_recent_ids, [video.id])
+                # Get co-watch related video IDs, sorted by score
+                sorted_cowatch = sorted(cowatch_map.items(), key=lambda x: x[1], reverse=True)
+                cowatch_video_ids = [vid for vid, _ in sorted_cowatch[:10]]
+                if cowatch_video_ids:
+                    cowatch_videos = list(
+                        approved_videos.filter(id__in=cowatch_video_ids)
+                        .select_related('category')
+                        .annotate(
+                            num_likes=Count('likes', distinct=True),
+                            num_dislikes=Count('dispikes', distinct=True),
+                        )
                     )
-                )
-                # Sort by co-watch score
-                cowatch_order = {vid: i for i, vid in enumerate(cowatch_video_ids)}
-                cowatch_videos.sort(key=lambda v: cowatch_order.get(v.id, 999))
-                # Fill remaining with category-based
-                remaining = 5 - len(cowatch_videos)
-                if remaining > 0:
-                    cat_vids = list(
+                    # Sort by co-watch score
+                    cowatch_order = {vid: i for i, vid in enumerate(cowatch_video_ids)}
+                    cowatch_videos.sort(key=lambda v: cowatch_order.get(v.id, 999))
+                    # Fill remaining with category-based
+                    remaining = 12 - len(cowatch_videos)
+                    if remaining > 0:
+                        cat_vids = list(
+                            approved_videos.filter(category=video.category)
+                            .exclude(id=video.id)
+                            .exclude(id__in=cowatch_video_ids)
+                            .order_by('-timestamp')[:remaining]
+                        )
+                        cowatch_videos.extend(cat_vids)
+                    native_related = cowatch_videos[:12]
+                else:
+                    native_related = list(
                         approved_videos.filter(category=video.category)
                         .exclude(id=video.id)
-                        .exclude(id__in=cowatch_video_ids)
-                        .order_by('-timestamp')[:remaining]
+                        .order_by('-timestamp')[:12]
                     )
-                    cowatch_videos.extend(cat_vids)
-                related_videos = cowatch_videos[:5]
             else:
-                related_videos = list(
+                native_related = list(
                     approved_videos.filter(category=video.category)
                     .exclude(id=video.id)
-                    .order_by('-timestamp')[:5]
+                    .order_by('-timestamp')[:12]
                 )
+            related_videos = mixed_related_videos(
+                native_related, related_youtube_for(video, limit=6), request
+            )
         else:
-            related_videos = list(
-                approved_videos.filter(category=video.category)
-                .exclude(id=video.id)
-                .order_by('-timestamp')[:5]
+            related_videos = mixed_related_videos(
+                list(
+                    approved_videos.filter(category=video.category)
+                    .exclude(id=video.id)
+                    .order_by('-timestamp')[:12]
+                ),
+                related_youtube_for(video, limit=6),
+                request,
             )
 
         video_author_channel = MediaProfile.objects.filter(user=video.author).first()
@@ -633,7 +1141,11 @@ class LoginWatchVideo(APIView):
             creek = None
             if_creeked = False
 
-        like_count = Like.objects.filter(video=video).count()
+        creek_like_count = Like.objects.filter(video=video).count()
+        if video.source_type == "YOUTUBE" and video.youtube_video_id:
+            like_count = youtube_like_counts_for([video.youtube_video_id]).get(video.youtube_video_id, 0)
+        else:
+            like_count = creek_like_count
         dispike_count = DisPike.objects.filter(video=video).count()
         creek_count = Creek.objects.filter(account=video_author_channel).count() if video_author_channel else 0
 
@@ -642,10 +1154,12 @@ class LoginWatchVideo(APIView):
             "related_videos": VideoSerializer(related_videos, many=True, context={'request': request}).data,
             "like": LikeSerializer(like).data if if_liked else False,
             "like_count": like_count,
+            "creek_like_count": creek_like_count,
             "dispike": DisPikeSerializer(dispike).data if if_dispiked else False,
             "dispike_count": dispike_count,
             "creek": CreekSerializer(creek).data if if_creeked else False,
             "creek_count": creek_count,
+            "related_videos": related_videos,
         }, status=status.HTTP_200_OK)
 
 
@@ -657,15 +1171,58 @@ class GuestWatchVideo(APIView):
         if not video_id:
             return Response({"detail": "Video ID not provided"}, status=status.HTTP_400_BAD_REQUEST)
 
-        approved_videos = Video.objects.filter(is_approved=True, visibility="public", author__is_active=True).exclude(author__username=YOUTUBE_SYSTEM_USERNAME)
-        video = get_object_or_404(Video.objects.filter(is_approved=True, author__is_active=True).exclude(author__username=YOUTUBE_SYSTEM_USERNAME), id=video_id)
+        # Resolve a stored row first: by stored YouTube ID, then by primary key.
+        video = resolve_video_by_id(
+            video_id,
+            Video.objects.filter(is_approved=True, visibility="public", author__is_active=True),
+        )
+
+        if video is None and validate_youtube_id(video_id):
+            # A live YouTube ID that isn't stored as a CreekTube row: stream it
+            # straight from the YouTube Data API.
+            yt_item = get_youtube_video_details(video_id)
+            if not yt_item:
+                return Response({"detail": "Video not found"}, status=404)
+            return Response({
+                "video": yt_item,
+                "related_videos": youtube_related_videos(video_id),
+                "like": False,
+                "like_count": yt_item.get("like_count", 0),
+                "creek_like_count": 0,
+                "dispike": False,
+                "dispike_count": 0,
+                "creek": False,
+                "creek_count": 0,
+            }, status=status.HTTP_200_OK)
+
+        if video is None:
+            return Response({"detail": "Video not found"}, status=404)
+
+        approved_videos = Video.objects.filter(is_approved=True, visibility="public", author__is_active=True)
         video_category = video.category
 
-        related_videos = approved_videos.filter(
-            category=video_category
-        ).exclude(id=video_id).order_by('-timestamp')[:5]
+        if video.source_type == "YOUTUBE" and video.youtube_video_id:
+            related_videos = mixed_related_videos(
+                related_native_for(video, limit=6),
+                youtube_related_videos(video.youtube_video_id),
+                request,
+            )
+        else:
+            related_videos = mixed_related_videos(
+                list(
+                    approved_videos.filter(category=video_category)
+                    .exclude(id=video.id)
+                    .order_by('-timestamp')[:12]
+                ),
+                related_youtube_for(video, limit=6),
+                request,
+            )
 
-        like_count = Like.objects.filter(video=video).count()
+        creek_like_count = Like.objects.filter(video=video).count()
+        if video.source_type == "YOUTUBE" and video.youtube_video_id:
+            like_count = youtube_like_counts_for([video.youtube_video_id]).get(video.youtube_video_id, 0)
+        else:
+            like_count = creek_like_count
         dispike_count = DisPike.objects.filter(video=video).count()
         video_author_channel = MediaProfile.objects.filter(user=video.author).first()
         creek_count = Creek.objects.filter(account=video_author_channel).count() if video_author_channel else 0
@@ -675,10 +1232,36 @@ class GuestWatchVideo(APIView):
             "related_videos": VideoSerializer(related_videos, many=True, context={'request': request}).data,
             "like": False,
             "like_count": like_count,
+            "creek_like_count": creek_like_count,
             "dispike": False,
             "dispike_count": dispike_count,
             "creek": False,
             "creek_count": creek_count,
+            "related_videos": related_videos,
+        }, status=status.HTTP_200_OK)
+
+
+class YouTubeChannel(APIView):
+    permission_classes = [AllowAny]
+
+    def get(self, request):
+        channel_id = (request.query_params.get('channel_id') or '').strip()
+        if not validate_youtube_channel_id(channel_id):
+            return Response(
+                {'detail': 'A valid YouTube channel ID is required'},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        channel = youtube_channel(channel_id)
+        if not channel:
+            return Response({'detail': 'Channel not found'}, status=status.HTTP_404_NOT_FOUND)
+        content_type = (request.query_params.get('type') or 'videos').strip().lower()
+        duration = 'short' if content_type == 'snips' else 'any'
+        videos = youtube_channel_videos(channel_id, limit=24, duration=duration)
+        return Response({
+            'channel': channel,
+            'videos': videos,
+            'type': 'snips' if duration == 'short' else 'videos',
+            'youtube_error': youtube_api_status(),
         }, status=status.HTTP_200_OK)
 
 
@@ -700,7 +1283,11 @@ class TrackRetention(APIView):
         except (TypeError, ValueError):
             duration = 0
 
-        video = get_object_or_404(Video.objects.filter(author__is_active=True), id=video_id)
+        video = resolve_video_by_id(video_id, Video.objects.filter(author__is_active=True))
+        if video is None:
+            # Live YouTube videos aren't tracked in the retention tables.
+            return Response({"status": "ok"}, status=200)
+
         event = (
             WatchEvent.objects.filter(user=request.user, video=video)
             .order_by('-timestamp')
@@ -728,7 +1315,7 @@ class SearchVideo(APIView):
             Q(title__icontains=title) |
             Q(description__icontains=title),
             author__is_active=True
-        ).exclude(author__username=YOUTUBE_SYSTEM_USERNAME).order_by("-id")[:20]
+        ).order_by("-id")[:20]
 
         users = MediaProfile.objects.filter(
             Q(user__username__icontains=title),
@@ -738,9 +1325,23 @@ class SearchVideo(APIView):
         video_serializer = VideoSerializer(videos, many=True, context={'request': request})
         user_serializer = MediaProfileSerializer(users, many=True, context={'request': request})
 
+        # Live YouTube results (videos + channels) mixed into search.
+        youtube_videos = []
+        youtube_channels = []
+        if validate_youtube_id(title):
+            yt_item = get_youtube_video_details(title)
+            if yt_item:
+                youtube_videos.append(yt_item)
+        else:
+            youtube_videos = youtube_search_videos(title, limit=10)
+        youtube_channels = youtube_search_channels(title, limit=10)
+
         return Response({
             "videos": video_serializer.data,
             "users": user_serializer.data,
+            "youtube_videos": youtube_videos,
+            "youtube_channels": youtube_channels,
+            "youtube_error": youtube_api_status(),
         }, status=status.HTTP_200_OK)
 
 
@@ -760,27 +1361,13 @@ class SearchUsers(APIView):
         serializer = MediaProfileSerializer(users, many=True, context={'request': request})
         return Response(serializer.data, status=status.HTTP_200_OK)
 
-class SearchUsersMod(APIView):
-    permission_classes = [IsModerator]
-
-    def get(self, request):
-        q = request.query_params.get("q", "").strip()
-        if not q:
-            return Response([], status=status.HTTP_200_OK)
-
-        users = MediaProfile.objects.filter(
-            Q(user__username__icontains=q)
-        ).select_related('user')[:8]
-
-        serializer = MediaProfileSerializer(users, many=True, context={'request': request})
-        return Response(serializer.data, status=status.HTTP_200_OK)
-
 
 class InterestTag(APIView):
-    """Every CreekTube video/snip carrying a hashtag.
+    """Every CreekTube video/snip carrying a hashtag, plus YouTube results.
 
     Any user can write ``#whatever`` in a title or description; that hashtag
-    gets its own page at ``/interests/<tag>``.
+    gets its own page at ``/interests/<tag>``. YouTube videos for the same tag
+    are mixed in when the hybrid (YouTube API) build is available.
     """
 
     permission_classes = [AllowAny]
@@ -795,7 +1382,7 @@ class InterestTag(APIView):
                 is_approved=True, visibility="public", author__is_active=True,
                 tags__name=cleaned,
             )
-            .exclude(author__username=YOUTUBE_SYSTEM_USERNAME)
+            .exclude(source_type="YOUTUBE", author__username=YOUTUBE_SYSTEM_USERNAME)
             .select_related("category", "author")
             .distinct()
             .order_by("-timestamp")[:40]
@@ -814,7 +1401,24 @@ class InterestTag(APIView):
             "tag": cleaned,
             "videos": VideoSerializer(videos, many=True, context={"request": request}).data,
             "snips": SnipSerializer(snips, many=True, context={"request": request}).data,
+            "youtube_videos": youtube_search_videos(cleaned, limit=20),
         }, status=200)
+
+
+class SearchUsersMod(APIView):
+    permission_classes = [IsModerator]
+
+    def get(self, request):
+        q = request.query_params.get("q", "").strip()
+        if not q:
+            return Response([], status=status.HTTP_200_OK)
+
+        users = MediaProfile.objects.filter(
+            Q(user__username__icontains=q)
+        ).select_related('user')[:8]
+
+        serializer = MediaProfileSerializer(users, many=True, context={'request': request})
+        return Response(serializer.data, status=status.HTTP_200_OK)
 
 class IfModerator(APIView):
     permission_classes = [IsModerator]
@@ -837,6 +1441,12 @@ class ModPanel(APIView):
         }, status=status.HTTP_200_OK)
 
     def post(self, request):
+        profile = getattr(request.user, "mediaprofile", None)
+        if not (request.user.is_superuser or (profile and profile.has_permission("mod.approve"))):
+            return Response(
+                {"detail": "Your moderator title cannot approve or reject content"},
+                status=403,
+            )
         video_id = request.data.get("id")
         if not video_id:
             return Response({"detail": "Video ID not provided"}, status=status.HTTP_400_BAD_REQUEST)
@@ -860,6 +1470,12 @@ class ModPanel(APIView):
         return Response(serializer.data, status=status.HTTP_200_OK)
 
     def delete(self, request):
+        profile = getattr(request.user, "mediaprofile", None)
+        if not (request.user.is_superuser or (profile and profile.has_permission("mod.approve"))):
+            return Response(
+                {"detail": "Your moderator title cannot remove content"},
+                status=403,
+            )
         video_id = request.data.get("id")
         if not video_id:
             return Response({"detail": "Video ID not provided"}, status=status.HTTP_400_BAD_REQUEST)
@@ -918,7 +1534,7 @@ class SetAccountActive(APIView):
             return Response({"error": "You cannot modify your own account"}, status=400)
 
         target_profile = getattr(user, "mediaprofile", None)
-        if active is False and target_profile and target_profile.moderator:
+        if active is False and target_profile and target_profile.is_moderator():
             return Response({"error": "You cannot deactivate another moderator's account"}, status=400)
 
         if active is False:
@@ -947,6 +1563,33 @@ class SetAccountActive(APIView):
         }, status=200)
 
 
+class ModActionLogs(APIView):
+    """
+    Moderator tool: list every soft-ban/deactivation and reactivation,
+    visible to all moderators.
+    """
+    permission_classes = [IsModerator]
+
+    def get(self, request):
+        logs = ModActionLog.objects.select_related("target", "moderator")[:200]
+        data = [
+            {
+                "id": log.pk,
+                "target": log.target.username,
+                "target_id": log.target.pk,
+                "moderator": log.moderator.username,
+                "action": log.action,
+                "reason": log.reason,
+                "created_at": log.created_at.isoformat(),
+            }
+            for log in logs
+        ]
+        return Response(data, status=200)
+
+
+# ---------------------------
+# Superuser admin panel (titles, permissions, grants)
+# ---------------------------
 class AdminPanel(APIView):
     """Superuser overview: every title, the permission catalog, and stats."""
 
@@ -1097,30 +1740,6 @@ class AdminUsers(APIView):
         }, status=200)
 
 
-class ModActionLogs(APIView):
-    """
-    Moderator tool: list every soft-ban/deactivation and reactivation,
-    visible to all moderators.
-    """
-    permission_classes = [IsModerator]
-
-    def get(self, request):
-        logs = ModActionLog.objects.select_related("target", "moderator")[:200]
-        data = [
-            {
-                "id": log.pk,
-                "target": log.target.username,
-                "target_id": log.target.pk,
-                "moderator": log.moderator.username,
-                "action": log.action,
-                "reason": log.reason,
-                "created_at": log.created_at.isoformat(),
-            }
-            for log in logs
-        ]
-        return Response(data, status=200)
-
-
 # ---------------------------
 # Interactable Video Features
 # ---------------------------
@@ -1131,11 +1750,26 @@ class CommentVideo(APIView):
         if not video_id:
             return Response({'message': 'No video ID provided'}, status=status.HTTP_400_BAD_REQUEST)
 
-        video = get_object_or_404(Video.objects.filter(author__is_active=True), id=video_id)
+        video = resolve_video_by_id(video_id, Video.objects.filter(author__is_active=True))
+        if video is None:
+            # Live YouTube videos stream YouTube's own comments (read-only).
+            if validate_youtube_id(video_id):
+                return Response(youtube_comments(video_id), status=status.HTTP_200_OK)
+            return Response({'message': 'Video not found'}, status=status.HTTP_404_NOT_FOUND)
+
         top_level = Comment.objects.filter(video=video, parent=None, author__is_active=True).select_related('author').order_by('-is_pinned', '-timestamp')
 
         serializer = CommentSerializer(top_level, many=True, context={'request': request})
-        return Response(serializer.data, status=status.HTTP_200_OK)
+        data = serializer.data
+
+        # YouTube rows show live YouTube comments (read-only) alongside any
+        # CreekTube comments the community has added.
+        if video.source_type == "YOUTUBE" and video.youtube_video_id:
+            yt_comments = youtube_comments(video.youtube_video_id)
+            for comment in yt_comments:
+                comment["creek_comment_id"] = None
+            data = yt_comments + data
+        return Response(data, status=status.HTTP_200_OK)
 
 
 @method_decorator(csrf_exempt, name='dispatch')
@@ -1151,7 +1785,17 @@ class UploadCommentVideo(APIView):
         if not comment_text:
             return Response({'message': 'No comment provided'}, status=status.HTTP_400_BAD_REQUEST)
 
-        video = get_object_or_404(Video.objects.filter(author__is_active=True), id=video_id)
+        video = resolve_video_by_id(video_id, Video.objects.filter(author__is_active=True))
+        if video is None and validate_youtube_id(video_id):
+            # Live YouTube video: materialize a stored row so the CreekTube
+            # comment lives in our database alongside the read-only YouTube
+            # comments.
+            video = ensure_youtube_video(video_id, user=author)
+        if video is None:
+            return Response(
+                {'message': 'Comments are managed on YouTube for this video'},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
 
         # Spam check
         if not check_comment_spam(author, video):
@@ -1180,14 +1824,40 @@ class PikeVideo(APIView):
         if not video_id:
             return Response({"detail": "Video ID required"}, status=status.HTTP_400_BAD_REQUEST)
 
-        video = get_object_or_404(Video.objects.filter(author__is_active=True), id=video_id)
+        video = resolve_video_by_id(video_id, Video.objects.filter(author__is_active=True))
+        if video is None and validate_youtube_id(video_id):
+            # Live YouTube video: materialize a stored row so the CreekTube
+            # like is tracked against YouTube's real count.
+            video = ensure_youtube_video(video_id, user=request.user)
+        if video is None:
+            return Response({"liked": False}, status=status.HTTP_200_OK)
+
         like, created = Like.objects.get_or_create(author=request.user, video=video)
+
+        creek_like_count = Like.objects.filter(video=video).count()
+        if video.source_type == "YOUTUBE" and video.youtube_video_id:
+            like_count = youtube_like_counts_for([video.youtube_video_id]).get(video.youtube_video_id, 0)
+            youtube_like_count = like_count
+        else:
+            like_count = creek_like_count
+            youtube_like_count = None
 
         if not created:
             like.delete()
-            return Response({"liked": False}, status=status.HTTP_200_OK)
+            creek_like_count = Like.objects.filter(video=video).count()
+            return Response({
+                "liked": False,
+                "like_count": like_count,
+                "youtube_like_count": youtube_like_count,
+                "creek_like_count": creek_like_count,
+            }, status=status.HTTP_200_OK)
 
-        return Response({"liked": True}, status=status.HTTP_201_CREATED)
+        return Response({
+            "liked": True,
+            "like_count": like_count,
+            "youtube_like_count": youtube_like_count,
+            "creek_like_count": creek_like_count,
+        }, status=status.HTTP_201_CREATED)
 
 
 @method_decorator(csrf_exempt, name='dispatch')
@@ -1218,7 +1888,11 @@ class DisPikeVideo(APIView):
         if not video_id:
             return Response({"detail": "Video ID required"}, status=status.HTTP_400_BAD_REQUEST)
 
-        video = get_object_or_404(Video.objects.filter(author__is_active=True), id=video_id)
+        video = resolve_video_by_id(video_id, Video.objects.filter(author__is_active=True))
+        if video is None:
+            # Live YouTube videos (not stored as CreekTube rows) have no dislike state.
+            return Response({"dispike": False}, status=status.HTTP_200_OK)
+
         dispike, created = DisPike.objects.get_or_create(author=request.user, video=video)
 
         profile, _ = MediaProfile.objects.get_or_create(user=request.user)
@@ -1254,6 +1928,61 @@ class CreekAccount(APIView):
             return Response({"creek": False}, status=status.HTTP_200_OK)
 
         return Response({"creek": True}, status=status.HTTP_201_CREATED)
+
+
+class CreekYouTubeChannel(APIView):
+    """Creek (follow) a YouTube channel, shown read-only alongside Creektube creators."""
+
+    permission_classes = [IsAuthenticated]
+
+    def post(self, request):
+        channel_id = (request.data.get("channel_id") or "").strip()
+        if not validate_youtube_channel_id(channel_id):
+            return Response(
+                {"detail": "A valid YouTube channel ID is required"},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        follow, created = YouTubeChannelFollow.objects.get_or_create(
+            user=request.user,
+            channel_id=channel_id,
+            defaults={
+                "channel_name": (request.data.get("channel_name") or "").strip()[:255],
+                "channel_thumbnail": (request.data.get("channel_thumbnail") or "").strip(),
+                "channel_handle": (request.data.get("channel_handle") or "").strip().lstrip("@")[:255],
+            },
+        )
+        if not created:
+            follow.delete()
+            return Response({"creek": False}, status=status.HTTP_200_OK)
+        return Response({
+            "creek": True,
+            "channel": {
+                "channel_id": follow.channel_id,
+                "channel_name": follow.channel_name,
+                "channel_thumbnail": follow.channel_thumbnail,
+                "channel_handle": follow.channel_handle,
+            },
+        }, status=status.HTTP_201_CREATED)
+
+
+class YouTubeFollows(APIView):
+    """List the YouTube channels the user creeks (read-only subscriptions)."""
+
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request):
+        follows = YouTubeChannelFollow.objects.filter(user=request.user)
+        return Response([
+            {
+                "channel_id": f.channel_id,
+                "channel_name": f.channel_name,
+                "channel_thumbnail": f.channel_thumbnail,
+                "channel_handle": f.channel_handle,
+                "created_at": f.created_at.isoformat(),
+            }
+            for f in follows
+        ], status=200)
 
 
 # ---------------------------
@@ -1330,8 +2059,88 @@ class UploadVideo(APIView):
 
         record_upload(request.user)
 
-        apply_tags(video_instance, video_instance.title, video_instance.description)
+        apply_tags(video_instance, title, description)
         serializer = VideoSerializer(video_instance, context={'request': request})
+        return Response(serializer.data, status=201)
+
+
+class AddYouTubeVideo(APIView):
+    """
+    Creators add a YouTube video to CreekTube by URL or video ID.
+
+    The source_type is ALWAYS set server-side to YOUTUBE — the client can
+    never forge a source. YouTube media is never downloaded or stored; only
+    the 11-character video ID (plus optional channel attribution) is kept.
+    """
+
+    permission_classes = [IsAuthenticated]
+
+    def post(self, request):
+        if not check_upload_rate_limit(request.user):
+            return Response(
+                {"message": "Upload rate limit reached. Please wait before uploading again."},
+                status=429,
+            )
+
+        source = (
+            request.data.get("youtube_url")
+            or request.data.get("youtube_video_id")
+            or ""
+        ).strip()
+        video_id = normalize_youtube_url(source)
+        if not video_id:
+            return Response(
+                {"detail": "A valid YouTube video URL or ID is required"},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        title = (request.data.get("title") or "").strip()
+        description = (request.data.get("description") or "").strip()
+        visibility = request.data.get("visibility", "public")
+        if visibility not in ("public", "unlisted", "private"):
+            visibility = "public"
+
+        metadata = get_video_metadata(video_id) or {}
+        details = get_youtube_video_details(video_id) or {}
+        duration = details.get("duration") or 0
+
+        category_obj = None
+        category = request.data.get("category")
+        if category:
+            category_obj, _ = CategoryVideo.objects.get_or_create(
+                slug=category,
+                defaults={"name": category.replace("-", " ").title()},
+            )
+        elif metadata.get("category"):
+            # No explicit category: derive one from the YouTube video's own
+            # category so stored YouTube rows are categorized from day one.
+            category_obj, _ = CategoryVideo.objects.get_or_create(
+                slug=metadata["category"],
+                defaults={"name": metadata.get("category_name") or metadata["category"].replace("-", " ").title()},
+            )
+
+        video = Video.objects.create(
+            author=request.user,
+            category=category_obj,
+            title=title or metadata.get("title") or "YouTube video",
+            description=description or metadata.get("description") or "",
+            thumbnail=youtube_thumbnail_url(video_id),
+            video="",
+            source_type="YOUTUBE",
+            youtube_video_id=video_id,
+            youtube_channel_id=metadata.get("channel_id", ""),
+            youtube_channel_name=metadata.get("channel_name", ""),
+            visibility=visibility,
+            timestamp=timezone.now(),
+            is_approved=True,
+            duration=duration,
+            content_type=classify_content_type(duration),
+        )
+
+        record_upload(request.user)
+
+        apply_tags(video, video.title, video.description)
+        serializer = VideoSerializer(video, context={'request': request})
         return Response(serializer.data, status=201)
 
 
@@ -1623,6 +2432,23 @@ class UploadSnip(APIView):
         if visibility not in ("public", "unlisted", "private"):
             visibility = "public"
 
+        # Duration is optional (seconds). Tolerate a raw ISO-8601 or "1:23"
+        # style string as well as a plain number.
+        duration = 0
+        raw_duration = request.data.get("duration", "")
+        if raw_duration not in (None, ""):
+            duration = youtube_duration_seconds(raw_duration)
+            if not duration:
+                parts = str(raw_duration).split(":")
+                try:
+                    parts = [int(p) for p in parts]
+                except (TypeError, ValueError):
+                    parts = []
+                if len(parts) == 2:
+                    duration = parts[0] * 60 + parts[1]
+                elif len(parts) == 3:
+                    duration = parts[0] * 3600 + parts[1] * 60 + parts[2]
+
         # Auto-generate thumbnail from Cloudinary video URL if none provided
         if not thumbnail_url and video_url and video_public_id:
             from django.conf import settings
@@ -1641,6 +2467,7 @@ class UploadSnip(APIView):
                 thumbnail_public_id=thumbnail_public_id,
                 visibility=visibility,
                 is_approved=False,
+                duration=duration,
             )
         except Exception as e:
             from .cloudinary_utils import delete_cloudinary_resource
@@ -1683,15 +2510,27 @@ class SnipFeed(APIView):
         except (TypeError, ValueError):
             page_size = 12
 
-        approved_snips = Snip.objects.filter(is_approved=True, visibility="public", author__is_active=True).select_related("author")
-        total = approved_snips.count()
+        approved_snips = Snip.objects.filter(
+            is_approved=True, visibility="public", author__is_active=True
+        ).select_related("author").order_by("-timestamp")
+        native_total = approved_snips.count()
 
+        serializer = SnipSerializer(approved_snips, many=True, context={"request": request})
+        native_items = list(serializer.data)
+
+        youtube_items = build_youtube_snips_feed(request.user, limit=40)
+        youtube_total = len(youtube_items)
+
+        combined = [(_epoch(item["timestamp"]), item) for item in native_items]
+        combined += [(_epoch(item["timestamp"]), item) for item in youtube_items]
+        combined.sort(key=lambda pair: pair[0], reverse=True)
+
+        total = native_total + youtube_total
         start = (page - 1) * page_size
-        snips = approved_snips[start : start + page_size]
+        results = [item for _, item in combined[start:start + page_size]]
 
-        serializer = SnipSerializer(snips, many=True, context={"request": request})
         return Response({
-            "results": serializer.data,
+            "results": results,
             "page": page,
             "page_size": page_size,
             "count": total,
@@ -1706,6 +2545,38 @@ class WatchSnip(APIView):
         if not snip_id:
             return Response({"detail": "Snip ID required"}, status=400)
 
+        # A live YouTube Shorts ID (e.g. /snips/{yt_id}) is streamed straight
+        # from the Data API through the iframe embed, exactly like videos.
+        if validate_youtube_id(snip_id):
+            yt_item = get_youtube_video_details(snip_id)
+            if not yt_item:
+                return Response({"detail": "Snip not found"}, status=404)
+            is_liked, like_count, yt_like_count, creek_like_count = youtube_snip_like_state(request, snip_id)
+            return Response({
+                "id": yt_item.get("youtube_video_id") or snip_id,
+                "title": yt_item["title"],
+                "description": yt_item["description"],
+                "video": None,
+                "thumbnail": yt_item["thumbnail"],
+                "timestamp": yt_item["timestamp"],
+                "author": yt_item["author"],
+                "author_id": None,
+                "author_avatar": yt_item.get("author_avatar") or None,
+                "author_active": True,
+                "view_count": yt_item["view_count"],
+                "like_count": like_count,
+                "youtube_like_count": yt_like_count,
+                "creek_like_count": creek_like_count,
+                "is_liked": is_liked,
+                "source_type": "YOUTUBE",
+                "content_type": yt_item.get("content_type") or "SNIP",
+                "duration": yt_item.get("duration") or 0,
+                "youtube_video_id": yt_item.get("youtube_video_id") or snip_id,
+                "youtube_channel_id": yt_item.get("youtube_channel_id") or "",
+                "youtube_channel_name": yt_item.get("youtube_channel_name") or "",
+                "embed_url": youtube_embed_url(snip_id),
+            }, status=200)
+
         try:
             snip = Snip.objects.filter(author__is_active=True).select_related("author").get(id=snip_id)
         except Snip.DoesNotExist:
@@ -1717,6 +2588,7 @@ class WatchSnip(APIView):
         # Record view with spam prevention (authenticated users only)
         if request.user.is_authenticated:
             record_view(request.user, snip=snip)
+            record_tag_interest_from_watch(request.user, snip=snip)
         else:
             Snip.objects.filter(id=snip.id).update(view_count=F("view_count") + 1)
             snip.refresh_from_db(fields=["view_count"])
@@ -1738,6 +2610,32 @@ class LikeSnip(APIView):
         snip_id = request.data.get("id")
         if not snip_id:
             return Response({"detail": "Snip ID required"}, status=400)
+
+        # Likes on live YouTube Shorts are stored against the lightweight
+        # YOUTUBE Video row so they persist; the count mirrors the YouTube
+        # watch page (YouTube likes + CreekTube likes).
+        if validate_youtube_id(snip_id):
+            video = ensure_youtube_video(snip_id, request.user)
+            if not video:
+                return Response({"detail": "Snip not found"}, status=404)
+            like, created = Like.objects.get_or_create(video=video, author=request.user)
+            creek_like_count = Like.objects.filter(video=video).count()
+            yt_like_count = youtube_like_counts_for([snip_id]).get(snip_id, 0)
+            if not created:
+                like.delete()
+                creek_like_count = Like.objects.filter(video=video).count()
+                return Response({
+                    "is_liked": False,
+                    "like_count": max(yt_like_count + creek_like_count, 0),
+                    "youtube_like_count": yt_like_count,
+                    "creek_like_count": creek_like_count,
+                }, status=200)
+            return Response({
+                "is_liked": True,
+                "like_count": yt_like_count + creek_like_count,
+                "youtube_like_count": yt_like_count,
+                "creek_like_count": creek_like_count,
+            }, status=201)
 
         snip = get_object_or_404(Snip.objects.filter(author__is_active=True), id=snip_id)
         like, created = SnipLike.objects.get_or_create(author=request.user, snip=snip)
@@ -1780,6 +2678,10 @@ class SnipCommentList(APIView):
         if not snip_id:
             return Response({'detail': 'snip_id required'}, status=status.HTTP_400_BAD_REQUEST)
 
+        # Live YouTube Shorts surface their read-only YouTube comments.
+        if validate_youtube_id(snip_id):
+            return Response(youtube_comments(snip_id), status=status.HTTP_200_OK)
+
         snip = get_object_or_404(Snip.objects.filter(author__is_active=True), id=snip_id)
         top_level = Comment.objects.filter(snip=snip, parent=None, author__is_active=True).select_related('author').order_by('-is_pinned', '-timestamp')
         serializer = CommentSerializer(top_level, many=True, context={'request': request})
@@ -1798,6 +2700,13 @@ class UploadSnipComment(APIView):
 
         if not comment_text:
             return Response({'detail': 'No comment provided'}, status=status.HTTP_400_BAD_REQUEST)
+
+        # YouTube comments are read-only: the user comments on YouTube, not here.
+        if validate_youtube_id(snip_id):
+            return Response(
+                {'detail': 'YouTube comments are read-only'},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
 
         snip = get_object_or_404(Snip.objects.filter(author__is_active=True), id=snip_id)
 
@@ -1888,6 +2797,10 @@ class TrackSnipRetention(APIView):
             duration = max(0, min(int(duration), 86400))
         except (TypeError, ValueError):
             duration = 0
+
+        # Live YouTube Shorts aren't tracked in the retention tables.
+        if validate_youtube_id(snip_id):
+            return Response({"status": "ok"}, status=200)
 
         snip = get_object_or_404(Snip.objects.filter(author__is_active=True), id=snip_id)
         event = (
@@ -1991,7 +2904,6 @@ class WatchHistory(APIView):
                 is_approved=True,
                 author__is_active=True,
             )
-            .exclude(author__username=YOUTUBE_SYSTEM_USERNAME)
             .annotate(last_watched=Max('watch_events__timestamp'))
             .order_by('-last_watched')[:limit]
         )

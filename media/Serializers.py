@@ -3,6 +3,7 @@ from accounts.models import Profile
 import os
 from .models import *
 from .tags import tag_names_for
+from .youtube import YOUTUBE_SYSTEM_USERNAME
 
 
 class MediaProfileSerializer(serializers.ModelSerializer):
@@ -98,12 +99,20 @@ class CommentSerializer(serializers.ModelSerializer):
     edited = serializers.BooleanField(read_only=True)
     likes_count = serializers.SerializerMethodField()
     is_liked = serializers.SerializerMethodField()
+    source = serializers.SerializerMethodField()
+    read_only = serializers.SerializerMethodField()
 
     class Meta:
         model = Comment
         fields = ["id", "author", "author_id", "author_avatar", "text", "timestamp",
                   "updated_at", "is_pinned", "edited", "parent", "replies",
-                  "likes_count", "is_liked"]
+                  "likes_count", "is_liked", "source", "read_only"]
+
+    def get_source(self, obj):
+        return "creektube"
+
+    def get_read_only(self, obj):
+        return False
 
     def get_author_id(self, obj):
         try:
@@ -147,6 +156,9 @@ class SnipSerializer(serializers.ModelSerializer):
     video = serializers.SerializerMethodField()
     thumbnail = serializers.SerializerMethodField()
     is_liked = serializers.SerializerMethodField()
+    source_type = serializers.SerializerMethodField()
+    content_type = serializers.SerializerMethodField()
+    duration = serializers.IntegerField(read_only=True)
     tags = serializers.SerializerMethodField()
 
     class Meta:
@@ -154,7 +166,8 @@ class SnipSerializer(serializers.ModelSerializer):
         fields = [
             "id", "title", "description", "video", "thumbnail", "visibility", "timestamp",
             "is_approved", "author", "author_id", "author_avatar", "author_active",
-            "view_count", "like_count", "is_liked", "tags",
+            "view_count", "like_count", "is_liked",
+            "source_type", "content_type", "duration", "tags",
         ]
 
     def get_tags(self, obj):
@@ -197,9 +210,16 @@ class SnipSerializer(serializers.ModelSerializer):
             return obj.likes.filter(author=request.user).exists()
         return False
 
+    def get_source_type(self, obj):
+        return "CREEKTUBE"
+
+    def get_content_type(self, obj):
+        return "SNIP"
+
 
 class VideoSerializer(serializers.ModelSerializer):
-    author = serializers.CharField(source="author.username", read_only=True)
+    id = serializers.SerializerMethodField()
+    author = serializers.SerializerMethodField()
     author_avatar = serializers.SerializerMethodField()
     author_active = serializers.SerializerMethodField()
     thumbnail = serializers.SerializerMethodField()
@@ -209,6 +229,13 @@ class VideoSerializer(serializers.ModelSerializer):
     category_name = serializers.SerializerMethodField()
     author_id = serializers.SerializerMethodField()
     view_count = serializers.IntegerField(read_only=True)
+    source_type = serializers.CharField(read_only=True)
+    youtube_video_id = serializers.CharField(read_only=True)
+    youtube_channel_id = serializers.CharField(read_only=True)
+    youtube_channel_name = serializers.CharField(read_only=True)
+    embed_url = serializers.SerializerMethodField()
+    content_type = serializers.CharField(read_only=True)
+    duration = serializers.IntegerField(read_only=True)
     tags = serializers.SerializerMethodField()
 
     class Meta:
@@ -216,7 +243,8 @@ class VideoSerializer(serializers.ModelSerializer):
         fields = [
             "id", "category", "category_name", "title", "description", "thumbnail", "video", "visibility",
             "timestamp", "is_approved", "author", "author_id", "author_avatar", "author_active",
-            "comments", "view_count", "tags",
+            "comments", "view_count", "source_type", "youtube_video_id", "youtube_channel_id",
+            "youtube_channel_name", "embed_url", "content_type", "duration", "tags",
         ]
 
     def get_tags(self, obj):
@@ -224,6 +252,28 @@ class VideoSerializer(serializers.ModelSerializer):
 
     def get_author_active(self, obj):
         return obj.author.is_active
+
+    def get_id(self, obj):
+        # Auto-materialized YouTube rows (owned by the reserved system account)
+        # are addressed by their YouTube ID so every link behaves exactly like
+        # the live feed item. Creator-added YouTube videos keep their real id.
+        if (
+            obj.source_type == "YOUTUBE"
+            and obj.youtube_video_id
+            and obj.author.username == YOUTUBE_SYSTEM_USERNAME
+        ):
+            return obj.youtube_video_id
+        return obj.pk
+
+    def get_author(self, obj):
+        # Materialized YouTube rows are owned by the system account for
+        # bookkeeping; show the real YouTube channel name instead.
+        if (
+            obj.source_type == "YOUTUBE"
+            and obj.author.username == YOUTUBE_SYSTEM_USERNAME
+        ):
+            return obj.youtube_channel_name or "YouTube"
+        return obj.author.username
 
     def get_category_name(self, obj):
         if obj.category:
@@ -235,6 +285,8 @@ class VideoSerializer(serializers.ModelSerializer):
         return CommentSerializer(comments, many=True, context=self.context).data
 
     def get_author_id(self, obj):
+        if obj.source_type == "YOUTUBE":
+            return None
         try:
             return MediaProfile.objects.get(user=obj.author).id
         except MediaProfile.DoesNotExist:
@@ -245,12 +297,21 @@ class VideoSerializer(serializers.ModelSerializer):
             return None
         return obj.video
 
+    def get_embed_url(self, obj):
+        if obj.source_type == "YOUTUBE" and obj.youtube_video_id:
+            from .youtube import youtube_embed_url
+            return youtube_embed_url(obj.youtube_video_id)
+        return None
+
     def get_thumbnail(self, obj):
         if not obj.thumbnail:
             return None
         return obj.thumbnail
 
     def get_author_avatar(self, obj):
+        if obj.source_type == "YOUTUBE" and obj.youtube_channel_id:
+            from .youtube import youtube_channel_avatars_for
+            return youtube_channel_avatars_for([obj.youtube_channel_id]).get(obj.youtube_channel_id)
         try:
             profile = getattr(obj.author, "profile", None)
             if profile and profile.avatar:
