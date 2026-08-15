@@ -60,14 +60,31 @@ TEMPLATES = [
 WSGI_APPLICATION = 'burst.wsgi.application'
 ASGI_APPLICATION = 'burst.asgi.application'
 
+# Redis is optional. A loopback/localhost REDIS_URL is never reachable from
+# Vercel serverless functions (each instance is ephemeral with no local Redis),
+# so treat it as unconfigured and fall back to in-process layers.
+def _redis_url():
+    url = (os.environ.get("REDIS_URL") or "").strip()
+    if not url:
+        return ""
+    for marker in ("localhost", "127.0.0.1", "0.0.0.0", "::1"):
+        if marker in url:
+            return ""
+    return url
+
+
+_REDIS_URL = _redis_url()
+
 # Channels configuration
 CHANNEL_LAYERS = {
     "default": {
         "BACKEND": "channels_redis.core.RedisChannelLayer",
         "CONFIG": {
-            "hosts": [os.environ.get("REDIS_URL", "redis://localhost:6379")],
+            "hosts": [_REDIS_URL],
         },
-    } if os.environ.get("REDIS_URL") else {
+    },
+} if _REDIS_URL else {
+    "default": {
         "BACKEND": "channels.layers.InMemoryChannelLayer",
     },
 }
@@ -150,18 +167,19 @@ CLOUDINARY_STORAGE = {
 # YouTube videos. Missing key = graceful fallback, native behavior unchanged.
 YOUTUBE_API_KEY = os.environ.get("YOUTUBE_API_KEY", "")
 
-# Shared YouTube result cache. Redis is used when REDIS_URL is present so
-# feed/search results survive worker restarts and are shared across serverless
-# instances; otherwise the in-process cache keeps behavior unchanged.
-YOUTUBE_SHARED_CACHE = bool(os.environ.get("REDIS_URL"))
+# Shared YouTube result cache. Redis is used when REDIS_URL points at a
+# reachable (non-loopback) host so feed/search results survive worker restarts
+# and are shared across serverless instances; otherwise the in-process cache
+# keeps behavior unchanged.
+YOUTUBE_SHARED_CACHE = bool(_REDIS_URL)
 CACHES = {
     "default": {
         "BACKEND": "django.core.cache.backends.locmem.LocMemCache",
     },
     "youtube": {
         "BACKEND": "django.core.cache.backends.redis.RedisCache",
-        "LOCATION": os.environ.get("REDIS_URL", "redis://localhost:6379"),
-    } if os.environ.get("REDIS_URL") else {
+        "LOCATION": _REDIS_URL,
+    } if _REDIS_URL else {
         "BACKEND": "django.core.cache.backends.locmem.LocMemCache",
     },
 }
