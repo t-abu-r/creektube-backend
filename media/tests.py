@@ -8,8 +8,10 @@ from django.utils import timezone
 from rest_framework.test import APIClient
 
 from . import ranking
+from . import snips_rank
 from .models import (CategoryVideo, Comment, Creek, DisPike, Like, MediaProfile,
-                     Snip, Video, WatchEvent, UploadRateLimit, UserTitle,
+                     Snip, SnipDislike, SnipFeedback, SnipLike, SnipSave,
+                     Tag, Video, WatchEvent, UploadRateLimit, UserTitle,
                      YouTubeChannelFollow)
 from . import youtube as youtube_module
 from .youtube import (normalize_youtube_url, validate_youtube_id,
@@ -43,6 +45,49 @@ def make_watch_event(user, video, hours_ago=0, duration=60, session_id=""):
         video=video,
         duration_watched=duration,
         session_id=session_id or f"session_{user.id}",
+    )
+    if hours_ago:
+        WatchEvent.objects.filter(pk=event.pk).update(
+            timestamp=timezone.now() - timedelta(hours=hours_ago)
+        )
+        event.refresh_from_db()
+    return event
+
+
+def make_snip(author, category=None, hours_old=0, is_approved=True, title="snip",
+              duration=15, view_count=0, tags=()):
+    """Helper: create a Snip with backdated timestamp and optional tags."""
+    snip = Snip.objects.create(
+        author=author,
+        category=category,
+        title=title,
+        description=f"desc {title}",
+        video=f"snip_{title}.mp4",
+        thumbnail="",
+        visibility="public",
+        is_approved=is_approved,
+        duration=duration,
+        view_count=view_count,
+    )
+    if tags:
+        for name in tags:
+            tag, _ = Tag.objects.get_or_create(name=name)
+            snip.tags.add(tag)
+    if hours_old:
+        Snip.objects.filter(pk=snip.pk).update(
+            timestamp=timezone.now() - timedelta(hours=hours_old)
+        )
+        snip.refresh_from_db()
+    return snip
+
+
+def make_snip_event(user, snip, hours_ago=0, duration=0, session_id=""):
+    """Helper: create a WatchEvent for a snip with a backdated timestamp."""
+    event = WatchEvent.objects.create(
+        user=user,
+        snip=snip,
+        duration_watched=duration,
+        session_id=session_id or f"snip_session_{user.id}",
     )
     if hours_ago:
         WatchEvent.objects.filter(pk=event.pk).update(
@@ -1446,4 +1491,310 @@ class CrossSourceRelatedTests(TestCase):
         )
         related = views_module.related_native_for(yt, limit=6)
         self.assertEqual([v.id for v in related], [native.id])
+
+
+# ---------------------------------------------------------------------------
+# Snip recommendation engine tests
+# ---------------------------------------------------------------------------
+class SnipRecommendationUnitTests(TestCase):
+    """Unit-level scoring for the snips_rank engine."""
+
+    def setUp(self):
+        self.viewer = User.objects.create_user(username="snip_viewer", password="pw")
+        self.creator = User.objects.create_user(username="snip_creator", password="pw")
+        self.gaming = CategoryVideo.objects.create(name="Gaming", slug="gaming")
+        self.cooking = CategoryVideo.objects.create(name="Cooking", slug="cooking")
+
+    def test_interest_affinity_matches_top_category(self):
+        self.assertEqual(snips_rank.interest_affinity("gaming", {"gaming": 10}), 1.0)
+        self.assertEqual(snips_rank.interest_affinity("cooking", {"gaming": 10}), snips_rank.EXPLORATION_FLOOR)
+
+    def test_topic_affinity_matches_known_tag(self):
+        self.assertAlmostEqual(
+            snips_rank.topic_affinity(["redstone"], {"redstone": 8, "farms": 4}), 1.0
+        )
+        self.assertEqual(snips_rank.topic_affinity(["music"], {"redstone": 8}), 0.0)
+
+    def test_creator_affinity_prefers_followed_author(self):
+        self.assertEqual(
+            snips_rank.creator_affinity(self.creator.id, {self.creator.id}, {}), 1.0
+        )
+
+    def test_engagement_signal_log_scaled(self):
+        low = snips_rank.engagement_signal(10, 1000)
+        high = snips_rank.engagement_signal(100, 1000)
+        self.assertGreater(high, low)
+
+    def test_quality_signal_completion_rate(self):
+        self.assertEqual(snips_rank.quality_signal(7.5, 15), 0.5)
+        self.assertEqual(snips_rank.quality_signal(None, 15), 0.0)
+
+    def test_recency_decays_with_age(self):
+        fresh = timezone.now()
+        old = timezone.now() - timedelta(hours=72)
+        self.assertGreater(snips_rank.recency_score(fresh), snips_rank.recency_score(old))
+
+    def test_dislike_flag_dominates_score(self):
+        ctx = snips_rank.build_user_context(self.viewer)
+        s = make_snip(self.creator, self.gaming, title="t")
+        metrics = {"likes": 0, "dislikes": 1, "comment_count": 0,
+                   "avg_duration_watched": None, "views": 10, "max_likes": 1, "max_views": 10}
+        _, total_clean, _ = snips_rank.score_snip(s, ctx, metrics)
+        ctx["disliked_ids"] = {s.id}
+        _, total_disliked, _ = snips_rank.score_snip(s, ctx, metrics)
+        self.assertLess(total_disliked, total_clean - 2.5)
+
+
+class SnipRecommendationIntegrationTests(TestCase):
+    """Engine-level recommendation behavior."""
+
+    def setUp(self):
+        self.viewer = User.objects.create_user(username="rec_viewer", password="pw")
+        self.creator_a = User.objects.create_user(username="rec_creator_a", password="pw")
+        self.creator_b = User.objects.create_user(username="rec_creator_b", password="pw")
+        self.gaming = CategoryVideo.objects.create(name="Gaming", slug="gaming")
+        self.cooking = CategoryVideo.objects.create(name="Cooking", slug="cooking")
+        self.music = CategoryVideo.objects.create(name="Music", slug="music")
+
+    def test_cold_start_returns_diverse_pool(self):
+        for i in range(6):
+            make_snip(self.creator_a, self.gaming, hours_old=i, title=f"a{i}", view_count=50)
+        for i in range(3):
+            make_snip(self.creator_b, self.cooking, hours_old=i, title=f"b{i}", view_count=50)
+        ctx = snips_rank.build_user_context(self.viewer)
+        result = snips_rank.build_recommended(self.viewer, ctx, limit=40)
+        titles = [r["snip"].title for r in result]
+        # Cold-start pool caps each author at 2 so both creators appear.
+        self.assertEqual(len(titles), 4)
+        self.assertLessEqual(len([t for t in titles if t.startswith("a")]), 2)
+        self.assertLessEqual(len([t for t in titles if t.startswith("b")]), 2)
+        self.assertTrue(all(r["reason"] for r in result))
+
+    def test_topic_match_ranks_above_mismatch(self):
+        redstone = Tag.objects.create(name="redstone")
+        watched = make_snip(self.creator_a, self.gaming, hours_old=2, title="watched", tags=["redstone"])
+        make_snip_event(self.viewer, watched, hours_ago=1, duration=15)
+        matched = make_snip(self.creator_b, self.gaming, hours_old=1, title="matched", tags=["redstone"])
+        mismatched = make_snip(self.creator_b, self.cooking, hours_old=1, title="mismatched")
+
+        ctx = snips_rank.build_user_context(self.viewer)
+        result = snips_rank.build_recommended(self.viewer, ctx, limit=10)
+        titles = [r["snip"].title for r in result]
+        self.assertLess(titles.index("matched"), titles.index("mismatched"))
+
+    def test_disliked_snip_is_excluded(self):
+        bad = make_snip(self.creator_a, self.gaming, hours_old=1, title="bad")
+        good = make_snip(self.creator_b, self.gaming, hours_old=1, title="good")
+        SnipDislike.objects.create(author=self.viewer, snip=bad)
+        ctx = snips_rank.build_user_context(self.viewer)
+        result = snips_rank.build_recommended(self.viewer, ctx, limit=10)
+        titles = [r["snip"].title for r in result]
+        self.assertNotIn("bad", titles)
+        self.assertIn("good", titles)
+
+    def test_not_interested_snip_is_hidden(self):
+        bad = make_snip(self.creator_a, self.gaming, hours_old=1, title="hidden")
+        good = make_snip(self.creator_b, self.gaming, hours_old=1, title="good")
+        SnipFeedback.objects.create(
+            author=self.viewer, snip=bad, kind=SnipFeedback.NOT_INTERESTED
+        )
+        ctx = snips_rank.build_user_context(self.viewer)
+        result = snips_rank.build_recommended(self.viewer, ctx, limit=10)
+        titles = [r["snip"].title for r in result]
+        self.assertNotIn("hidden", titles)
+        self.assertIn("good", titles)
+
+    def test_abandoned_snip_is_penalized_but_not_removed(self):
+        # The abandoned clip was watched ~9 days ago: outside the 7-day
+        # "watched" exclusion window, so it stays a candidate and is only
+        # penalized by the abandon signal.
+        abandoned = make_snip(self.creator_a, self.gaming, hours_old=240, title="abandoned", duration=20)
+        make_snip_event(self.viewer, abandoned, hours_ago=216, duration=1)
+        fresh = make_snip(self.creator_b, self.gaming, hours_old=1, title="fresh", duration=20)
+        ctx = snips_rank.build_user_context(self.viewer)
+        result = snips_rank.build_recommended(self.viewer, ctx, limit=10)
+        titles = [r["snip"].title for r in result]
+        self.assertIn("abandoned", titles)
+        self.assertLess(titles.index("fresh"), titles.index("abandoned"))
+
+    def test_followed_creator_reason_surface(self):
+        make_snip(self.creator_a, self.gaming, hours_old=1, title="followed_snip")
+        Creek.objects.create(author=self.viewer, account=MediaProfile.objects.get_or_create(user=self.creator_a)[0])
+        ctx = snips_rank.build_user_context(self.viewer)
+        result = snips_rank.build_recommended(self.viewer, ctx, limit=10)
+        reason = result[0]["reason"]
+        self.assertEqual(reason, f"Because you follow @{self.creator_a.username}")
+
+    def test_related_snips_tag_first_then_category(self):
+        seed = make_snip(self.creator_a, self.gaming, hours_old=1, title="seed", tags=["redstone"])
+        tag_related = make_snip(self.creator_b, self.cooking, hours_old=1, title="tag_related", tags=["redstone"])
+        cat_related = make_snip(self.creator_b, self.gaming, hours_old=1, title="cat_related")
+        make_snip(self.creator_b, self.music, hours_old=1, title="unrelated")
+
+        related = snips_rank.related_snips(seed, limit=2)
+        titles = [r.title for r in related]
+        # Tag overlap ranks first, category match fills the rest; the recent
+        # fallback is only used to top up when there aren't enough matches.
+        self.assertEqual(titles, ["tag_related", "cat_related"])
+        reason = snips_rank.reason_for_related(seed, related[0])
+        self.assertEqual(reason, "More about #redstone")
+
+    def test_trending_uses_momentum_not_personalization(self):
+        trending = make_snip(self.creator_a, self.gaming, hours_old=1, title="trending", view_count=500)
+        stale = make_snip(self.creator_b, self.gaming, hours_old=500, title="stale", view_count=1)
+        for i in range(5):
+            u = User.objects.create_user(username=f"trend_viewer_{i}")
+            make_snip_event(u, trending, hours_ago=1, duration=15)
+        result = snips_rank.build_trending(None, limit=10)
+        titles = [r["snip"].title for r in result]
+        self.assertLess(titles.index("trending"), titles.index("stale"))
+
+
+class SnipRecommendationApiTests(TestCase):
+    """API surface for the snip recommendation endpoints."""
+
+    def setUp(self):
+        self.client = APIClient()
+        self.viewer = User.objects.create_user(username="api_viewer", password="pw")
+        self.creator = User.objects.create_user(username="api_creator", password="pw")
+        self.gaming = CategoryVideo.objects.create(name="Gaming", slug="gaming")
+        self.cooking = CategoryVideo.objects.create(name="Cooking", slug="cooking")
+        self.snip = make_snip(self.creator, self.gaming, title="api_snip", tags=["redstone"])
+
+    def _auth(self):
+        self.client.force_authenticate(user=self.viewer)
+
+    def test_feed_returns_modes_and_contract(self):
+        resp = self.client.get("/media/snip/feed/")
+        self.assertEqual(resp.status_code, 200)
+        self.assertIn("results", resp.data)
+        self.assertIn("count", resp.data)
+        self.assertIn("mode", resp.data)
+        self.assertEqual(resp.data["mode"], "recommended")
+        self.assertIn("youtube_error", resp.data)
+
+    def test_feed_respects_exclude_ids(self):
+        resp = self.client.get("/media/snip/feed/", {"exclude_ids": str(self.snip.id)})
+        titles = [item["title"] for item in resp.data["results"]]
+        self.assertNotIn("api_snip", titles)
+
+    def test_feed_pagination(self):
+        resp = self.client.get("/media/snip/feed/", {"page_size": 1, "page": 1})
+        self.assertEqual(len(resp.data["results"]), 1)
+
+    def test_dislike_is_mutually_exclusive_with_like(self):
+        self._auth()
+        resp = self.client.post("/media/snip/dislike/", {"id": self.snip.id})
+        self.assertEqual(resp.status_code, 201)
+        self.assertTrue(resp.data["is_disliked"])
+        self.assertTrue(SnipDislike.objects.filter(author=self.viewer, snip=self.snip).exists())
+        self.assertFalse(SnipLike.objects.filter(author=self.viewer, snip=self.snip).exists())
+
+        resp = self.client.post("/media/snip/like/", {"id": self.snip.id})
+        self.assertEqual(resp.status_code, 201)
+        self.assertTrue(resp.data["is_liked"])
+        self.assertFalse(resp.data["is_disliked"])
+        self.assertFalse(SnipDislike.objects.filter(author=self.viewer, snip=self.snip).exists())
+
+    def test_dislike_requires_auth(self):
+        resp = self.client.post("/media/snip/dislike/", {"id": self.snip.id})
+        self.assertEqual(resp.status_code, 401)
+
+    def test_save_unsave_and_saved_list(self):
+        self._auth()
+        resp = self.client.post("/media/snip/save/", {"id": self.snip.id})
+        self.assertEqual(resp.status_code, 201)
+        self.assertTrue(resp.data["is_saved"])
+        self.assertTrue(SnipSave.objects.filter(author=self.viewer, snip=self.snip).exists())
+
+        resp = self.client.get("/media/snip/saved/")
+        self.assertEqual(resp.status_code, 200)
+        self.assertEqual([item["id"] for item in resp.data["results"]], [self.snip.id])
+
+        resp = self.client.post("/media/snip/save/", {"id": self.snip.id})
+        self.assertEqual(resp.status_code, 200)
+        self.assertFalse(resp.data["is_saved"])
+        self.assertFalse(SnipSave.objects.filter(author=self.viewer, snip=self.snip).exists())
+
+    def test_feedback_not_interested_hides_from_feed(self):
+        self._auth()
+        resp = self.client.post(
+            "/media/snip/feedback/",
+            {"id": self.snip.id, "kind": "not_interested"},
+        )
+        self.assertEqual(resp.status_code, 201)
+        feed = self.client.get("/media/snip/feed/", {"exclude_ids": ""})
+        titles = [item["title"] for item in feed.data["results"]]
+        self.assertNotIn("api_snip", titles)
+
+    def test_feedback_report_requires_reason(self):
+        self._auth()
+        resp = self.client.post(
+            "/media/snip/feedback/", {"id": self.snip.id, "kind": "report"}
+        )
+        self.assertEqual(resp.status_code, 400)
+        resp = self.client.post(
+            "/media/snip/feedback/", {"id": self.snip.id, "kind": "report", "reason": "spam"}
+        )
+        self.assertEqual(resp.status_code, 201)
+
+    def test_feedback_invalid_kind_rejected(self):
+        self._auth()
+        resp = self.client.post(
+            "/media/snip/feedback/", {"id": self.snip.id, "kind": "banana"}
+        )
+        self.assertEqual(resp.status_code, 400)
+
+    def test_related_endpoint(self):
+        related = make_snip(self.creator, self.gaming, title="related_api", tags=["redstone"])
+        resp = self.client.get("/media/snip/related/", {"id": self.snip.id})
+        self.assertEqual(resp.status_code, 200)
+        self.assertEqual([item["id"] for item in resp.data["results"]], [related.id])
+        self.assertTrue(resp.data["results"][0]["reason"])
+
+    def test_related_requires_id(self):
+        resp = self.client.get("/media/snip/related/")
+        self.assertEqual(resp.status_code, 400)
+
+    def test_snip_search_by_title_tag_and_creator(self):
+        other = make_snip(self.creator, self.cooking, title="cooking_short", tags=["farms"])
+        resp = self.client.get("/media/snip/search/", {"q": "cooking"})
+        self.assertEqual(resp.status_code, 200)
+        self.assertEqual([item["id"] for item in resp.data["results"]], [other.id])
+
+        resp = self.client.get("/media/snip/search/", {"q": "redstone"})
+        self.assertEqual(resp.status_code, 200)
+        self.assertEqual([item["id"] for item in resp.data["results"]], [self.snip.id])
+
+        resp = self.client.get("/media/snip/search/", {"q": "api_creator"})
+        self.assertEqual(resp.status_code, 200)
+        self.assertIn(self.snip.id, [item["id"] for item in resp.data["results"]])
+
+    def test_watch_snip_learns_category_interest(self):
+        self._auth()
+        resp = self.client.get("/media/snip/watch/", {"id": self.snip.id})
+        self.assertEqual(resp.status_code, 200)
+        profile = MediaProfile.objects.get(user=self.viewer)
+        self.assertGreater(profile.categories.get("gaming", 0), 0)
+
+    def test_watch_records_session_id(self):
+        self._auth()
+        self.client.get("/media/snip/watch/", {"id": self.snip.id})
+        event = WatchEvent.objects.filter(user=self.viewer, snip=self.snip).first()
+        self.assertIsNotNone(event)
+        self.assertTrue(event.session_id.startswith(f"{self.viewer.id}:"))
+
+    def test_serializer_exposes_new_fields(self):
+        self._auth()
+        resp = self.client.get("/media/snip/watch/", {"id": self.snip.id})
+        data = resp.data
+        self.assertIn("is_saved", data)
+        self.assertIn("is_disliked", data)
+        self.assertIn("comment_count", data)
+        self.assertIn("reason", data)
+        self.assertIn("creator_followers", data)
+        self.assertIn("is_followed", data)
+        self.assertIn("tags", data)
+        self.assertIn("category", data)
+        self.assertIn("duration", data)
 

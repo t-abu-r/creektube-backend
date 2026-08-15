@@ -11,7 +11,9 @@ from .Serializers import *
 from accounts.serializers import ProfileSerializer
 from .models import (Video, Comment, CommentLike, CategoryVideo, MediaProfile, Like,
                      DisPike, Creek, WatchEvent, UploadRateLimit, Notification, Snip, SnipLike,
+                     SnipDislike, SnipSave, SnipFeedback,
                      ModActionLog, UserTitle, YouTubeChannelFollow, Tag)
+from . import snips_rank
 from django.db.models import Count, Q, Sum, Avg, F, Max
 from django.db import IntegrityError
 from . import ranking
@@ -117,7 +119,11 @@ def record_view(user, video=None, snip=None):
     if events.count() >= VIEW_MAX_PER_USER:
         events.order_by('timestamp').first().delete()
 
-    event = WatchEvent.objects.create(user=user, video=video, snip=snip)
+    # Group events into ~30-minute session buckets so co-watch/session
+    # signals can be derived from shared session ids.
+    epoch_minutes = int(now.timestamp() // 1800)
+    session_id = f"{user.id}:{epoch_minutes}"
+    event = WatchEvent.objects.create(user=user, video=video, snip=snip, session_id=session_id)
 
     # Recompute unique viewers for the denormalized counter
     if video:
@@ -2497,8 +2503,112 @@ class UploadSnip(APIView):
         return Response(serializer.data, status=201)
 
 
+# ---------------------------
+# Snip Recommendation API
+# ---------------------------
+def _parse_id_list(raw):
+    """Parse a comma-separated list of numeric ids from a query param."""
+    ids = set()
+    if not raw:
+        return ids
+    for part in str(raw).split(","):
+        part = part.strip()
+        if part.isdigit():
+            ids.add(int(part))
+    return ids
+
+
+def _serialize_snips(scored_entries, request):
+    """Serialize ``[{"snip": obj, "score", "reason"}]`` into API dicts.
+
+    The internal ``score`` is never exposed; only the human-readable
+    ``reason`` is attached to each item. Like/save/dislike state is batch
+    loaded so the serializer issues no per-row queries.
+    """
+    if not scored_entries:
+        return []
+    snips = [entry["snip"] for entry in scored_entries]
+    reasons = {
+        entry["snip"].id: entry.get("reason")
+        for entry in scored_entries
+    }
+    ids = [s.id for s in snips]
+    user = request.user if request.user.is_authenticated else None
+    context = {"request": request, "snip_reasons": reasons}
+    if user:
+        context["snip_liked_ids"] = set(
+            SnipLike.objects.filter(author=user, snip_id__in=ids).values_list("snip_id", flat=True)
+        )
+        context["snip_saved_ids"] = set(
+            SnipSave.objects.filter(author=user, snip_id__in=ids).values_list("snip_id", flat=True)
+        )
+        context["snip_disliked_ids"] = set(
+            SnipDislike.objects.filter(author=user, snip_id__in=ids).values_list("snip_id", flat=True)
+        )
+        # Batch creator-follow state + follower counts.
+        author_ids = {s.author_id for s in snips}
+        followed = set(
+            Creek.objects.filter(author=user, account__user_id__in=author_ids)
+            .values_list("account__user_id", flat=True)
+        )
+        context["snip_followed_author_ids"] = followed
+        context["snip_creator_followers"] = dict(
+            MediaProfile.objects.filter(user_id__in=author_ids)
+            .annotate(creek_count=Count("account"))
+            .values_list("user_id", "creek_count")
+        )
+    serializer = SnipSerializer(
+        snips, many=True, context=context
+    )
+    return list(serializer.data)
+
+
+def _state_for_user(user, snip_ids):
+    """Batch load like/save/dislike state for ``user`` over ``snip_ids``."""
+    ids = list(snip_ids)
+    return {
+        "liked": set(
+            SnipLike.objects.filter(author=user, snip_id__in=ids).values_list("snip_id", flat=True)
+        ),
+        "saved": set(
+            SnipSave.objects.filter(author=user, snip_id__in=ids).values_list("snip_id", flat=True)
+        ),
+        "disliked": set(
+            SnipDislike.objects.filter(author=user, snip_id__in=ids).values_list("snip_id", flat=True)
+        ),
+    }
+
+
+def _is_following(user, author_id):
+    if not user.is_authenticated or not author_id:
+        return False
+    return Creek.objects.filter(
+        author=user, account__user_id=author_id, account__user__is_active=True
+    ).exists()
+
+
+def _snip_dislike_count(snip):
+    """Fresh denormalized dislike count without reloading the row."""
+    return SnipDislike.objects.filter(snip_id=snip.id).count()
+
+
 class SnipFeed(APIView):
+    """Recommended snips feed (with modes), backed by the ranking engine.
+
+    ``mode``:
+      * ``recommended`` (default) -- personalized ranking with diversity,
+        exploration, session awareness, and negative-feedback suppression.
+      * ``trending``             -- momentum (views/likes velocity), not personal.
+      * ``fresh``                -- newest-first with light diversity.
+      * ``following``            -- snips from creators the user creeks.
+
+    Keeps the legacy ``results``/``page``/``page_size``/``count`` contract and
+    adds ``mode``, ``youtube_error``, and a per-item ``reason`` explaining
+    "why am I seeing this".
+    """
     permission_classes = [AllowAny]
+
+    FEED_POOL_LIMIT = 120
 
     def get(self, request):
         try:
@@ -2510,30 +2620,61 @@ class SnipFeed(APIView):
         except (TypeError, ValueError):
             page_size = 12
 
-        approved_snips = Snip.objects.filter(
-            is_approved=True, visibility="public", author__is_active=True
-        ).select_related("author").order_by("-timestamp")
-        native_total = approved_snips.count()
+        mode = request.query_params.get("mode", "recommended").strip().lower()
+        if mode not in ("recommended", "trending", "fresh", "following"):
+            mode = "recommended"
 
-        serializer = SnipSerializer(approved_snips, many=True, context={"request": request})
-        native_items = list(serializer.data)
+        exclude_ids = _parse_id_list(request.query_params.get("exclude_ids", ""))
 
-        youtube_items = build_youtube_snips_feed(request.user, limit=40)
-        youtube_total = len(youtube_items)
+        user = request.user if request.user.is_authenticated else None
+        if mode == "following" and not user:
+            return Response({
+                "results": [], "page": page, "page_size": page_size,
+                "count": 0, "mode": mode, "youtube_error": youtube_api_status(),
+            }, status=200)
 
-        combined = [(_epoch(item["timestamp"]), item) for item in native_items]
-        combined += [(_epoch(item["timestamp"]), item) for item in youtube_items]
-        combined.sort(key=lambda pair: pair[0], reverse=True)
+        ctx = snips_rank.build_user_context(user)
 
-        total = native_total + youtube_total
+        if mode == "recommended":
+            native_entries = snips_rank.build_recommended(
+                user, ctx, limit=self.FEED_POOL_LIMIT, exclude_ids=exclude_ids
+            )
+            youtube_items = build_youtube_snips_feed(
+                request.user,
+                interest_categories=ctx.get("category_scores"),
+                history_keywords=recent_watch_keywords(request.user),
+                tag_queries=list(ctx.get("tag_scores", {}).keys()),
+            )
+        elif mode == "trending":
+            native_entries = snips_rank.build_trending(
+                user, limit=self.FEED_POOL_LIMIT, exclude_ids=exclude_ids
+            )
+            youtube_items = build_youtube_snips_feed(request.user, limit=40)
+        elif mode == "fresh":
+            native_entries = snips_rank.build_fresh(
+                user, limit=self.FEED_POOL_LIMIT, exclude_ids=exclude_ids
+            )
+            youtube_items = build_youtube_snips_feed(request.user, limit=40)
+        else:
+            native_entries = snips_rank.build_following(
+                user, limit=self.FEED_POOL_LIMIT, exclude_ids=exclude_ids
+            )
+            youtube_items = build_youtube_follows_feed(user, limit=40, shorts=True)
+
+        native_items = _serialize_snips(native_entries, request)
+        combined = interleave_feed(native_items, youtube_items, ratio=HYBRID_YOUTUBE_RATIO)
+
+        total = len(combined)
         start = (page - 1) * page_size
-        results = [item for _, item in combined[start:start + page_size]]
+        results = combined[start:start + page_size]
 
         return Response({
             "results": results,
             "page": page,
             "page_size": page_size,
             "count": total,
+            "mode": mode,
+            "youtube_error": youtube_api_status(),
         }, status=200)
 
 
@@ -2589,17 +2730,26 @@ class WatchSnip(APIView):
         if request.user.is_authenticated:
             record_view(request.user, snip=snip)
             record_tag_interest_from_watch(request.user, snip=snip)
+            if snip.category_id:
+                record_category_interest(request.user, snip.category.slug)
         else:
             Snip.objects.filter(id=snip.id).update(view_count=F("view_count") + 1)
             snip.refresh_from_db(fields=["view_count"])
 
-        is_liked = False
         if request.user.is_authenticated:
-            is_liked = SnipLike.objects.filter(author=request.user, snip=snip).exists()
+            context = {"request": request}
+            state = _state_for_user(request.user, [snip.id])
+            context.update({
+                "snip_liked_ids": state["liked"],
+                "snip_saved_ids": state["saved"],
+                "snip_disliked_ids": state["disliked"],
+                "snip_followed_author_ids": {snip.author_id} if _is_following(request.user, snip.author_id) else set(),
+            })
+        else:
+            context = {"request": request}
 
         return Response({
-            **SnipSerializer(snip, context={"request": request}).data,
-            "is_liked": is_liked,
+            **SnipSerializer(snip, context=context).data,
         }, status=200)
 
 
@@ -2638,16 +2788,255 @@ class LikeSnip(APIView):
             }, status=201)
 
         snip = get_object_or_404(Snip.objects.filter(author__is_active=True), id=snip_id)
+        # Liking and disliking are mutually exclusive.
+        had_dislike = SnipDislike.objects.filter(author=request.user, snip=snip).delete()[0] > 0
         like, created = SnipLike.objects.get_or_create(author=request.user, snip=snip)
 
         if not created:
             like.delete()
             Snip.objects.filter(id=snip.id).update(like_count=F("like_count") - 1)
-            return Response({"is_liked": False, "like_count": max(snip.like_count - 1, 0)}, status=200)
+            snip.refresh_from_db(fields=["like_count"])
+            return Response({
+                "is_liked": False,
+                "is_disliked": False,
+                "like_count": max(snip.like_count, 0),
+                "dislike_count": _snip_dislike_count(snip),
+            }, status=200)
 
         Snip.objects.filter(id=snip.id).update(like_count=F("like_count") + 1)
         snip.refresh_from_db(fields=["like_count"])
-        return Response({"is_liked": True, "like_count": snip.like_count}, status=201)
+        if had_dislike:
+            Snip.objects.filter(id=snip.id).update(dislike_count=F("dislike_count") - 1)
+
+        # Learn the positive signal: a like is stronger than a plain watch.
+        record_tag_interest_from_watch(request.user, snip=snip)
+        if snip.category_id:
+            record_category_interest(request.user, snip.category.slug, boost=ranking.LIKE_BOOST)
+
+        return Response({
+            "is_liked": True,
+            "is_disliked": False,
+            "like_count": snip.like_count,
+            "dislike_count": _snip_dislike_count(snip),
+        }, status=201)
+
+
+class DislikeSnip(APIView):
+    """Dislike a snip: mutually exclusive with like, and teaches the ranker."""
+    permission_classes = [IsAuthenticated]
+
+    def post(self, request):
+        snip_id = request.data.get("id")
+        if not snip_id:
+            return Response({"detail": "Snip ID required"}, status=400)
+
+        # Live YouTube Shorts are streamed via the Data API; dislikes are not
+        # stored against the lightweight Video row (only likes are).
+        if validate_youtube_id(snip_id):
+            return Response({"detail": "Dislikes are only available on CreekTube snips"}, status=400)
+
+        snip = get_object_or_404(Snip.objects.filter(author__is_active=True), id=snip_id)
+
+        dislike, created = SnipDislike.objects.get_or_create(author=request.user, snip=snip)
+
+        if not created:
+            dislike.delete()
+            Snip.objects.filter(id=snip.id).update(dislike_count=F("dislike_count") - 1)
+            snip.refresh_from_db(fields=["dislike_count"])
+            return Response({
+                "is_disliked": False,
+                "is_liked": False,
+                "dislike_count": max(snip.dislike_count, 0),
+                "like_count": snip.like_count,
+            }, status=200)
+
+        # Mutual exclusivity: disliking removes a prior like.
+        like_count_delta = 0
+        had_like = SnipLike.objects.filter(author=request.user, snip=snip).delete()[0] > 0
+        if had_like:
+            like_count_delta = -1
+
+        Snip.objects.filter(id=snip.id).update(
+            dislike_count=F("dislike_count") + 1,
+            like_count=F("like_count") + like_count_delta,
+        )
+
+        if snip.category_id:
+            record_category_interest(request.user, snip.category.slug, boost=ranking.DISLIKE_BOOST)
+
+        snip.refresh_from_db(fields=["dislike_count", "like_count"])
+        return Response({
+            "is_disliked": True,
+            "is_liked": False,
+            "dislike_count": max(snip.dislike_count, 0),
+            "like_count": max(snip.like_count, 0),
+        }, status=201)
+
+
+class SaveSnip(APIView):
+    """Save/unsave a snip to the user's "Saved snips" collection."""
+    permission_classes = [IsAuthenticated]
+
+    def post(self, request):
+        snip_id = request.data.get("id")
+        if not snip_id:
+            return Response({"detail": "Snip ID required"}, status=400)
+
+        if validate_youtube_id(snip_id):
+            return Response({"detail": "Saving is only available on CreekTube snips"}, status=400)
+
+        snip = get_object_or_404(Snip.objects.filter(author__is_active=True), id=snip_id)
+        save, created = SnipSave.objects.get_or_create(author=request.user, snip=snip)
+
+        if not created:
+            save.delete()
+            return Response({"is_saved": False}, status=200)
+
+        record_tag_interest_from_watch(request.user, snip=snip)
+        if snip.category_id:
+            record_category_interest(request.user, snip.category.slug, boost=ranking.SAVE_BOOST)
+        return Response({"is_saved": True}, status=201)
+
+
+class GetSavedSnips(APIView):
+    """The current user's saved snips, newest save first."""
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request):
+        saved = (
+            SnipSave.objects.filter(author=request.user, snip__is_approved=True)
+            .select_related("snip", "snip__author")
+            .order_by("-created_at")
+        )
+        snips = [s.snip for s in saved]
+        return Response({
+            "results": _serialize_snips(
+                [{"snip": s, "score": 0, "reason": "Saved by you"} for s in snips],
+                request,
+            ),
+        }, status=200)
+
+
+class SnipFeedbackView(APIView):
+    """Negative/report/share feedback that shapes the recommendation engine.
+
+    ``kind`` is one of: ``not_interested`` (hide this snip), ``not_interested_creator``
+    (fewer from this creator), ``not_interested_topic`` (fewer of this tag),
+    ``share`` (a share event), ``report`` (abuse/rule violation; goes to review).
+    """
+    permission_classes = [IsAuthenticated]
+
+    def post(self, request):
+        snip_id = request.data.get("id")
+        kind = (request.data.get("kind") or "").strip().lower()
+        if not snip_id:
+            return Response({"detail": "Snip ID required"}, status=400)
+        if kind not in SnipFeedback.KINDS:
+            return Response({"detail": f"Unknown feedback kind: {kind}"}, status=400)
+
+        if validate_youtube_id(snip_id):
+            return Response({"detail": "Feedback is only available on CreekTube snips"}, status=400)
+
+        snip = get_object_or_404(Snip.objects.filter(author__is_active=True), id=snip_id)
+
+        if kind == SnipFeedback.REPORT:
+            reason = (request.data.get("reason") or "").strip()[:500]
+            if not reason:
+                return Response({"detail": "A report reason is required"}, status=400)
+
+        creator = snip.author if kind == SnipFeedback.NOT_INTERESTED_CREATOR else None
+        tag = None
+        if kind == SnipFeedback.NOT_INTERESTED_TOPIC:
+            tag_name = (request.data.get("tag") or "").strip().lstrip("#")
+            if tag_name:
+                tag = Tag.objects.filter(name__iexact=tag_name).first()
+
+        SnipFeedback.objects.create(
+            author=request.user,
+            snip=snip,
+            kind=kind,
+            creator=creator,
+            tag=tag,
+            reason=request.data.get("reason", "")[:500] if kind == SnipFeedback.REPORT else "",
+        )
+
+        if kind == SnipFeedback.NOT_INTERESTED_CREATOR:
+            if snip.category_id:
+                record_category_interest(request.user, snip.category.slug, boost=ranking.DISLIKE_BOOST)
+            record_tag_interest(request.user, tag_names_for(snip), boost=ranking.DISLIKE_BOOST)
+
+        return Response({"status": "ok", "kind": kind}, status=201)
+
+
+class RelatedSnips(APIView):
+    """Rabbit hole: snips related to a seed snip (tag -> category -> recent)."""
+    permission_classes = [AllowAny]
+
+    def get(self, request):
+        snip_id = request.query_params.get("id")
+        if not snip_id:
+            return Response({"detail": "Snip ID required"}, status=400)
+        try:
+            limit = max(1, min(int(request.query_params.get("limit", 10)), 20))
+        except (TypeError, ValueError):
+            limit = 10
+
+        if validate_youtube_id(snip_id):
+            return Response({"results": []}, status=200)
+
+        seed = get_object_or_404(
+            Snip.objects.filter(author__is_active=True).prefetch_related("tags"),
+            id=snip_id,
+        )
+        related = snips_rank.related_snips(seed, limit=limit)
+        items = [
+            {
+                "snip": r,
+                "score": 0,
+                "reason": snips_rank.reason_for_related(seed, r),
+            }
+            for r in related
+        ]
+        return Response({"results": _serialize_snips(items, request)}, status=200)
+
+
+class SnipSearch(APIView):
+    """Search snips by title, description, hashtags, or creator username."""
+    permission_classes = [AllowAny]
+
+    def get(self, request):
+        q = (request.query_params.get("q") or "").strip()
+        if not q:
+            return Response({"results": [], "query": q}, status=200)
+        try:
+            limit = max(1, min(int(request.query_params.get("limit", 12)), 50))
+        except (TypeError, ValueError):
+            limit = 12
+
+        qs = (
+            Snip.objects.filter(
+                is_approved=True, visibility="public", author__is_active=True
+            )
+            .select_related("author", "category")
+            .prefetch_related("tags")
+            .filter(
+                Q(title__icontains=q)
+                | Q(description__icontains=q)
+                | Q(author__username__icontains=q)
+                | Q(tags__name__icontains=q)
+            )
+            .distinct()
+            .order_by("-timestamp")
+        )
+
+        results = list(qs[:limit])
+        return Response({
+            "results": _serialize_snips(
+                [{"snip": s, "score": 0, "reason": None} for s in results],
+                request,
+            ),
+            "query": q,
+        }, status=200)
 
 
 class GetOwnSnips(APIView):
@@ -2811,6 +3200,19 @@ class TrackSnipRetention(APIView):
         if event and event.duration_watched < duration:
             event.duration_watched = duration
             event.save(update_fields=['duration_watched'])
+
+        # Learn interest from how much of the clip was actually watched:
+        # a full watch is a strong positive, a near-immediate skip is a signal
+        # to downweight that topic/creator slightly.
+        duration_watched = max(0, min(int(duration), 86400))
+        snip_duration = snip.duration or 0
+        completion = (duration_watched / snip_duration) if snip_duration else 0
+        if completion >= 0.8 and snip.category_id:
+            record_category_interest(request.user, snip.category.slug, boost=ranking.WATCH_BOOST)
+        elif 0 < completion <= 0.1 and snip_duration >= snips_rank.ABANDON_MIN_SECONDS:
+            if snip.category_id:
+                record_category_interest(request.user, snip.category.slug, boost=-0.25)
+            record_tag_interest(request.user, tag_names_for(snip), boost=-0.25)
 
         return Response({"status": "ok"}, status=200)
 
