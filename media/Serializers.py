@@ -156,19 +156,38 @@ class SnipSerializer(serializers.ModelSerializer):
     video = serializers.SerializerMethodField()
     thumbnail = serializers.SerializerMethodField()
     is_liked = serializers.SerializerMethodField()
+    is_saved = serializers.SerializerMethodField()
+    is_disliked = serializers.SerializerMethodField()
     source_type = serializers.SerializerMethodField()
     content_type = serializers.SerializerMethodField()
     duration = serializers.IntegerField(read_only=True)
     tags = serializers.SerializerMethodField()
+    category = serializers.SerializerMethodField()
+    category_name = serializers.SerializerMethodField()
+    comment_count = serializers.SerializerMethodField()
+    creator_followers = serializers.SerializerMethodField()
+    is_followed = serializers.SerializerMethodField()
+    creator_verified = serializers.SerializerMethodField()
+    reason = serializers.SerializerMethodField()
 
     class Meta:
         model = Snip
         fields = [
             "id", "title", "description", "video", "thumbnail", "visibility", "timestamp",
             "is_approved", "author", "author_id", "author_avatar", "author_active",
-            "view_count", "like_count", "is_liked",
-            "source_type", "content_type", "duration", "tags",
+            "view_count", "like_count", "dislike_count", "is_liked", "is_saved", "is_disliked",
+            "source_type", "content_type", "duration", "tags", "category", "category_name",
+            "comment_count", "creator_followers", "is_followed", "creator_verified", "reason",
         ]
+
+    def _state_lookup(self, obj, key):
+        """Batched lookup state (liked/saved/disliked ids) passed via context."""
+        state = self.context.get(key)
+        if isinstance(state, dict):
+            return state.get(obj.id)
+        if isinstance(state, (set, list)):
+            return obj.id in state
+        return None
 
     def get_tags(self, obj):
         return tag_names_for(obj)
@@ -177,10 +196,8 @@ class SnipSerializer(serializers.ModelSerializer):
         return obj.author.is_active
 
     def get_author_id(self, obj):
-        try:
-            return MediaProfile.objects.get(user=obj.author).id
-        except MediaProfile.DoesNotExist:
-            return None
+        profile = getattr(obj.author, "mediaprofile", None)
+        return profile.pk if profile else obj.author.id
 
     def get_video(self, obj):
         if not obj.video:
@@ -205,10 +222,77 @@ class SnipSerializer(serializers.ModelSerializer):
         return None
 
     def get_is_liked(self, obj):
+        known = self._state_lookup(obj, "snip_liked_ids")
+        if known is not None:
+            return bool(known)
         request = self.context.get("request")
         if request and request.user.is_authenticated:
             return obj.likes.filter(author=request.user).exists()
         return False
+
+    def get_is_saved(self, obj):
+        known = self._state_lookup(obj, "snip_saved_ids")
+        if known is not None:
+            return bool(known)
+        request = self.context.get("request")
+        if request and request.user.is_authenticated:
+            return obj.saves.filter(author=request.user).exists()
+        return False
+
+    def get_is_disliked(self, obj):
+        known = self._state_lookup(obj, "snip_disliked_ids")
+        if known is not None:
+            return bool(known)
+        request = self.context.get("request")
+        if request and request.user.is_authenticated:
+            return obj.dislikes.filter(author=request.user).exists()
+        return False
+
+    def get_category(self, obj):
+        return obj.category.slug if obj.category else None
+
+    def get_category_name(self, obj):
+        return obj.category.name if obj.category else None
+
+    def get_comment_count(self, obj):
+        if hasattr(obj, "comment_count") and obj.comment_count is not None:
+            return obj.comment_count
+        return obj.comments.count()
+
+    def get_creator_followers(self, obj):
+        if hasattr(obj, "creator_followers") and obj.creator_followers is not None:
+            return obj.creator_followers
+        batched = self.context.get("snip_creator_followers")
+        if isinstance(batched, dict):
+            return batched.get(obj.author_id, 0)
+        try:
+            return obj.author.mediaprofile.account.count() if getattr(obj.author, "mediaprofile", None) else 0
+        except Exception:
+            return 0
+
+    def get_is_followed(self, obj):
+        request = self.context.get("request")
+        if request and request.user.is_authenticated:
+            batched = self.context.get("snip_followed_author_ids")
+            if isinstance(batched, set):
+                return obj.author_id in batched
+            profile = getattr(obj.author, "mediaprofile", None)
+            if profile:
+                from .models import Creek
+                return Creek.objects.filter(author=request.user, account=profile).exists()
+        return False
+
+    def get_creator_verified(self, obj):
+        profile = getattr(obj.author, "mediaprofile", None)
+        if profile is None:
+            return False
+        return profile.is_moderator() or profile.is_official()
+
+    def get_reason(self, obj):
+        reasons = self.context.get("snip_reasons")
+        if isinstance(reasons, dict):
+            return reasons.get(obj.id)
+        return None
 
     def get_source_type(self, obj):
         return "CREEKTUBE"

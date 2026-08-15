@@ -199,9 +199,16 @@ class Snip(models.Model):
         related_name="snips",
     )
     tags = models.ManyToManyField(Tag, blank=True, related_name="snips")
+    dislike_count = models.PositiveIntegerField(default=0, help_text="Denormalized dislike counter for cheap sorting")
 
     class Meta:
         ordering = ['-timestamp']
+        indexes = [
+            models.Index(fields=['is_approved', 'visibility']),
+            models.Index(fields=['-timestamp']),
+            models.Index(fields=['-view_count']),
+            models.Index(fields=['author', '-timestamp']),
+        ]
 
     def __str__(self):
         return self.title
@@ -217,6 +224,87 @@ class SnipLike(models.Model):
 
     def __str__(self):
         return f"{self.author.username} liked snip {self.snip.id}"
+
+
+class SnipDislike(models.Model):
+    """Negative feedback for a snip (dislike). Signals feed suppression."""
+    author = models.ForeignKey(User, on_delete=models.CASCADE)
+    snip = models.ForeignKey(Snip, on_delete=models.CASCADE, related_name='dislikes')
+    created_at = models.DateTimeField(auto_now_add=True, null=True)
+
+    class Meta:
+        unique_together = ['author', 'snip']
+
+    def __str__(self):
+        return f"{self.author.username} disliked snip {self.snip.id}"
+
+
+class SnipSave(models.Model):
+    """A bookmarked snip. Saves are a strong positive interest signal."""
+    author = models.ForeignKey(User, on_delete=models.CASCADE)
+    snip = models.ForeignKey(Snip, on_delete=models.CASCADE, related_name='saves')
+    created_at = models.DateTimeField(auto_now_add=True, null=True)
+
+    class Meta:
+        unique_together = ['author', 'snip']
+        ordering = ['-created_at']
+
+    def __str__(self):
+        return f"{self.author.username} saved snip {self.snip.id}"
+
+
+class SnipFeedback(models.Model):
+    """Misc snip feedback that feeds the recommendation engine.
+
+    ``kind`` distinguishes feedback scoped to a specific snip vs. its creator
+    or one of its topics so negative signals generalize instead of only hiding
+    a single clip:
+
+    * ``not_interested``           -- hide this snip
+    * ``not_interested_creator``   -- damp the creator's content
+    * ``not_interested_topic``     -- damp a topic (``tag``)
+    * ``share``                    -- positive: shared this snip
+    * ``report``                   -- report a snip
+    """
+
+    NOT_INTERESTED = "not_interested"
+    NOT_INTERESTED_CREATOR = "not_interested_creator"
+    NOT_INTERESTED_TOPIC = "not_interested_topic"
+    SHARE = "share"
+    REPORT = "report"
+    KINDS = {
+        NOT_INTERESTED,
+        NOT_INTERESTED_CREATOR,
+        NOT_INTERESTED_TOPIC,
+        SHARE,
+        REPORT,
+    }
+    KIND_CHOICES = [
+        (NOT_INTERESTED, "Not interested (this snip)"),
+        (NOT_INTERESTED_CREATOR, "Not interested in this creator"),
+        (NOT_INTERESTED_TOPIC, "Not interested in this topic"),
+        (SHARE, "Shared"),
+        (REPORT, "Reported"),
+    ]
+
+    author = models.ForeignKey(User, on_delete=models.CASCADE)
+    snip = models.ForeignKey(Snip, on_delete=models.CASCADE, related_name="feedbacks")
+    kind = models.CharField(max_length=30, choices=KIND_CHOICES)
+    creator = models.ForeignKey(
+        User, null=True, blank=True, on_delete=models.CASCADE, related_name="creator_feedbacks"
+    )
+    tag = models.ForeignKey(Tag, null=True, blank=True, on_delete=models.CASCADE, related_name="feedback_tags")
+    reason = models.TextField(max_length=500, blank=True, default="")
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        indexes = [
+            models.Index(fields=["author", "kind"]),
+            models.Index(fields=["author", "snip"]),
+        ]
+
+    def __str__(self):
+        return f"{self.author.username} {self.kind} snip {self.snip_id}"
 
 
 class Comment(models.Model):
