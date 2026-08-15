@@ -1,14 +1,17 @@
 from datetime import timedelta
-from unittest import mock
+from unittest import IsolatedAsyncioTestCase, mock
+
+import os
 
 from django.contrib.auth.models import User
 from django.db import IntegrityError
-from django.test import TestCase
+from django.test import SimpleTestCase, TestCase
 from django.utils import timezone
 from rest_framework.test import APIClient
 
 from . import ranking
 from . import snips_rank
+from .consumers import SnipFeedConsumer
 from .models import (CategoryVideo, Comment, Creek, DisPike, Like, MediaProfile,
                      Snip, SnipDislike, SnipFeedback, SnipLike, SnipSave,
                      Tag, Video, WatchEvent, UploadRateLimit, UserTitle,
@@ -1797,4 +1800,104 @@ class SnipRecommendationApiTests(TestCase):
         self.assertIn("tags", data)
         self.assertIn("category", data)
         self.assertIn("duration", data)
+
+
+class BrokenChannelLayer:
+    """Fake channel layer that raises like an unreachable Redis backplane."""
+
+    async def group_add(self, group, channel):
+        raise ConnectionError("redis down")
+
+    async def group_discard(self, group, channel):
+        raise ConnectionError("redis down")
+
+    async def group_send(self, group, payload):
+        raise ConnectionError("redis down")
+
+
+class SnipFeedConsumerResilienceTests(IsolatedAsyncioTestCase):
+    """A WebSocket connection must survive a missing/unreachable channel layer."""
+
+    def _consumer(self):
+        consumer = SnipFeedConsumer()
+        consumer.scope = {"user": None}
+        consumer.channel_name = "test_channel"
+        return consumer
+
+    async def test_group_add_sets_channel_ok_false_on_error(self):
+        consumer = self._consumer()
+        consumer.channel_layer = BrokenChannelLayer()
+        await consumer._group_add()
+        self.assertIs(consumer._channel_ok, False)
+
+    async def test_group_send_skips_when_channel_down(self):
+        consumer = self._consumer()
+        consumer._channel_ok = False
+        sent = []
+
+        class Layer:
+            async def group_send(self, group, payload):
+                sent.append(payload)
+
+        consumer.channel_layer = Layer()
+        await consumer._group_send({"type": "viewer_count", "count": 1})
+        self.assertEqual(sent, [])
+
+    async def test_group_send_swallows_errors(self):
+        consumer = self._consumer()
+        consumer._channel_ok = True
+        consumer.channel_layer = BrokenChannelLayer()
+        await consumer._group_send({"type": "viewer_count", "count": 1})
+
+    async def test_group_discard_swallows_errors(self):
+        consumer = self._consumer()
+        consumer._channel_ok = True
+        consumer.channel_layer = BrokenChannelLayer()
+        await consumer._group_discard()
+
+    async def test_connect_accepts_when_channel_layer_down(self):
+        consumer = self._consumer()
+        consumer.channel_layer = BrokenChannelLayer()
+        sent = []
+
+        async def fake_send(payload):
+            sent.append(payload)
+
+        consumer.base_send = fake_send
+
+        async def no_count():
+            return 0
+
+        consumer.get_viewer_count = no_count
+        await consumer.connect()
+        self.assertIs(consumer._channel_ok, False)
+        self.assertTrue(any(p.get("type") == "websocket.accept" for p in sent))
+
+
+class RedisConfigTests(SimpleTestCase):
+    """Loopback REDIS_URLs must never enable the Redis channel/cache layer."""
+
+    def _url(self):
+        from burst.settings import base
+        return base._redis_url()
+
+    def test_loopback_urls_treated_as_unconfigured(self):
+        for url in ("redis://localhost:6379",
+                    "redis://127.0.0.1:6379/0",
+                    "redis://0.0.0.0:6379",
+                    "rediss://localhost:6379"):
+            with mock.patch.dict(os.environ, {"REDIS_URL": url}):
+                self.assertEqual(self._url(), "", url)
+
+    def test_remote_url_is_usable(self):
+        with mock.patch.dict(os.environ, {"REDIS_URL": "rediss://u:p@redis.example.com:6379"}):
+            self.assertEqual(
+                self._url(),
+                "rediss://u:p@redis.example.com:6379",
+            )
+
+    def test_missing_url_is_unconfigured(self):
+        with mock.patch.dict(os.environ, {}, clear=False):
+            os.environ.pop("REDIS_URL", None)
+            self.assertEqual(self._url(), "")
 
