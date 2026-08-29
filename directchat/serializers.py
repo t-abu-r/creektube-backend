@@ -13,12 +13,12 @@ class UserSerializer(serializers.ModelSerializer):
 
     def get_avatar(self, obj):
         try:
-            profile = obj.profile
+            profile = obj.mediaprofile
         except Exception:
             return None
-        if profile and profile.avatar:
+        if profile and profile.banner:
             try:
-                return profile.avatar.url
+                return profile.banner.url
             except Exception:
                 return None
         return None

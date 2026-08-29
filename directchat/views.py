@@ -13,16 +13,18 @@ class UserListView(APIView):
     permission_classes = [IsAuthenticated]
 
     def get(self, request):
-        # accounts the user is following and the user themselves are excluded from the list
-        users_following = User.objects.filter(following__follower=request.user)
-        users_all = users_following.union(User.objects.all().exclude(id=request.user.id))
-
-        # Add so youtube_system and deactivated users are not shown in the list and remove emails
-        users_list = users_all.filter(is_active=False).order_by('username').exclude(username='youtube_system')
-        
+        # list all active users for chat, excluding the current user and the
+        # reserved system account (native CreekTube has no user-to-user follow model;
+        # the follow concept maps to Creek/interest, so we simply list everyone).
+        users_list = (
+            User.objects.all()
+            .exclude(id=request.user.id)
+            .filter(is_active=True)
+            .exclude(username="youtube_system")
+            .order_by("username")
+        )
 
         serializer = UserSerializer(users_list, many=True)
-
 
         return Response(serializer.data)
 
@@ -70,8 +72,8 @@ class ChatHistoryView(APIView):
         other_user = User.objects.get(pk=user2_pk)
         try:
             avatar_url = None
-            if other_user.profile and other_user.profile.avatar:
-                avatar_url = other_user.profile.avatar.url
+            if other_user.mediaprofile and other_user.mediaprofile.banner:
+                avatar_url = other_user.mediaprofile.banner.url
         except Exception:
             avatar_url = None
 
