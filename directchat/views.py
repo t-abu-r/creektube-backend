@@ -13,8 +13,17 @@ class UserListView(APIView):
     permission_classes = [IsAuthenticated]
 
     def get(self, request):
-        users = User.objects.all().exclude(id=request.user.id)
-        serializer = UserSerializer(users, many=True)
+        # accounts the user is following and the user themselves are excluded from the list
+        users_following = User.objects.filter(following__follower=request.user)
+        users_all = users_following.union(User.objects.all().exclude(id=request.user.id))
+
+        # Add so youtube_system and deactivated users are not shown in the list and remove emails
+        users_list = users_all.filter(is_active=False).order_by('username').exclude(username='youtube_system')
+        
+
+        serializer = UserSerializer(users_list, many=True)
+
+
         return Response(serializer.data)
 
 
