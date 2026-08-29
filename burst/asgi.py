@@ -11,12 +11,15 @@ try:
     django_asgi_app = get_asgi_application()
 
     from channels.routing import ProtocolTypeRouter, URLRouter
-    from media.routing import websocket_urlpatterns
-    from channels.auth import AuthMiddlewareStack
+    from media.routing import websocket_urlpatterns as media_ws_urlpatterns
+    from directchat.routing import websocket_urlpatterns as directchat_ws_urlpatterns
+    from burst.ws_auth import JWTAuthMiddleware
+
+    websocket_urlpatterns = media_ws_urlpatterns + directchat_ws_urlpatterns
 
     application = ProtocolTypeRouter({
         "http": django_asgi_app,
-        "websocket": AuthMiddlewareStack(
+        "websocket": JWTAuthMiddleware(
             URLRouter(websocket_urlpatterns)
         ),
     })
