@@ -63,8 +63,9 @@ class PresenceConsumer(AsyncWebsocketConsumer):
         }))
 
     async def send_online_users_list(self):
-        online_users = await self.get_online_users()
-        for user in online_users:
+        online_records = await self.get_online_users()
+        for record in online_records:
+            user = record.user
             await self.send(text_data=json.dumps({
                 "type": "presence",
                 "user_id": user.id,
@@ -93,4 +94,6 @@ class PresenceConsumer(AsyncWebsocketConsumer):
 
     @database_sync_to_async
     def get_online_users(self):
-        return list(OnlineUser.objects.filter(is_online=True))
+        return list(
+            OnlineUser.objects.filter(is_online=True).select_related("user")
+        )
