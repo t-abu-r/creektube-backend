@@ -28,6 +28,7 @@ class ChatModel(models.Model):
     receiver = models.ForeignKey(ReceiverModel, on_delete=models.CASCADE)
     text = models.TextField()
     log = models.DateTimeField(default=now)
+    is_read = models.BooleanField(default=False)
 
     def __str__(self):
         return f'{self.sender.user.get_username()} chats {self.receiver.user.get_username()}'
