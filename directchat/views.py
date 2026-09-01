@@ -7,7 +7,7 @@ from rest_framework.permissions import IsAuthenticated
 from media.models import Creek
 
 from .models import SenderModel, ReceiverModel, ChatModel
-from .serializers import UserSerializer
+from .serializers import UserSerializer, _user_avatar
 
 
 class UserListView(APIView):
@@ -87,12 +87,7 @@ class ChatHistoryView(APIView):
             })
 
         other_user = User.objects.get(pk=user2_pk)
-        try:
-            avatar_url = None
-            if other_user.mediaprofile and other_user.mediaprofile.banner:
-                avatar_url = other_user.mediaprofile.banner.url
-        except Exception:
-            avatar_url = None
+        avatar_url = _user_avatar(other_user)
 
         return Response({
             "other_user": {
