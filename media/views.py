@@ -1234,6 +1234,20 @@ class DisPikeVideo(APIView):
         return Response({"dispike": True}, status=status.HTTP_201_CREATED)
 
 
+def _resolve_profile(profile_id):
+    """Resolve a MediaProfile from either a MediaProfile pk or a User pk.
+
+    ``/account/[id]`` links and creek calls may carry a MediaProfile id
+    (video cards, search, comments) or a User id (chat info link, header).
+    """
+    profile = MediaProfile.objects.filter(user__is_active=True).filter(id=profile_id).first()
+    if profile is None:
+        profile = MediaProfile.objects.filter(user__is_active=True).filter(user_id=profile_id).first()
+    if profile is None:
+        raise MediaProfile.DoesNotExist
+    return profile
+
+
 class CreekAccount(APIView):
     permission_classes = [IsAuthenticated]
 
@@ -1242,7 +1256,10 @@ class CreekAccount(APIView):
         if not account_id:
             return Response({"detail": "Account ID required"}, status=status.HTTP_400_BAD_REQUEST)
 
-        account = get_object_or_404(MediaProfile.objects.filter(user__is_active=True), id=account_id)
+        try:
+            account = _resolve_profile(account_id)
+        except MediaProfile.DoesNotExist:
+            return Response({"detail": "Account not found"}, status=status.HTTP_404_NOT_FOUND)
 
         if account.user == request.user:
             return Response({"detail": "You cannot creek your own channel"}, status=status.HTTP_400_BAD_REQUEST)
@@ -1380,7 +1397,7 @@ class Account(APIView):
             return Response({"error": "ID is required"}, status=400)
 
         try:
-            profile_media = MediaProfile.objects.get(id=id)
+            profile_media = _resolve_profile(id)
         except MediaProfile.DoesNotExist:
             return Response({"error": "Profile not found"}, status=404)
 
