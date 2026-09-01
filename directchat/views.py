@@ -4,22 +4,39 @@ from rest_framework.response import Response
 from rest_framework import status
 from rest_framework.permissions import IsAuthenticated
 
+from media.models import Creek
+
 from .models import SenderModel, ReceiverModel, ChatModel
 from .serializers import UserSerializer
 
 
 class UserListView(APIView):
-    """API endpoint to list all users for direct chat."""
+    """API endpoint to list connected users for direct chat.
+
+    Two users are "connected" when they have mutually Creeked each
+    other — both have created a Creek pointing at the other user's
+    MediaProfile.  Only connected users appear in this list.
+    """
     permission_classes = [IsAuthenticated]
 
     def get(self, request):
-        # list all active users for chat, excluding the current user and the
-        # reserved system account (native CreekTube has no user-to-user follow model;
-        # the follow concept maps to Creek/interest, so we simply list everyone).
+        # Users I have Creeked
+        my_creeked_ids = set(
+            Creek.objects.filter(author=request.user)
+            .values_list('account__user_id', flat=True)
+        )
+
+        # Users who have Creeked me
+        creeked_me_ids = set(
+            Creek.objects.filter(account__user=request.user)
+            .values_list('author_id', flat=True)
+        )
+
+        # Mutual = connected
+        connected_ids = my_creeked_ids & creeked_me_ids
+
         users_list = (
-            User.objects.all()
-            .exclude(id=request.user.id)
-            .filter(is_active=True)
+            User.objects.filter(id__in=connected_ids, is_active=True)
             .exclude(username="youtube_system")
             .order_by("username")
         )
@@ -81,7 +98,6 @@ class ChatHistoryView(APIView):
             "other_user": {
                 "id": user2.id,
                 "username": user2.username,
-                "email": user2.email,
                 "avatar": avatar_url,
             },
             "messages": messages
