@@ -57,10 +57,25 @@ class ChatKeyModel(models.Model):
 
 
 class OnlineUser(models.Model):
-    """Track online users with last seen timestamp"""
+    """Track online users with last seen timestamp + presence status"""
+    STATUS_ONLINE = "online"
+    STATUS_INVISIBLE = "invisible"
+    STATUS_DND = "dnd"
+
+    STATUS_CHOICES = [
+        (STATUS_ONLINE, "Online"),
+        (STATUS_INVISIBLE, "Invisible"),
+        (STATUS_DND, "Do not disturb"),
+    ]
+
     user = models.OneToOneField(User, on_delete=models.CASCADE)
     last_seen = models.DateTimeField(auto_now=True)
     is_online = models.BooleanField(default=False)
+    status = models.CharField(
+        max_length=16,
+        choices=STATUS_CHOICES,
+        default=STATUS_ONLINE,
+    )
 
     def __str__(self):
-        return f"{self.user.username} - {'Online' if self.is_online else 'Offline'}"
+        return f"{self.user.username} - {self.status}"
