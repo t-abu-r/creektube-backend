@@ -251,7 +251,7 @@ class Creek(models.Model):
     created_at = models.DateTimeField(auto_now_add=True, null=True)
 
     def __str__(self):
-        return f"{self.author.username} Creeked {self.account.username}"
+        return f"{self.author.username} Creeked {self.account.user.username}"
 
 
 class WatchEvent(models.Model):
