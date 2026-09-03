@@ -181,6 +181,8 @@ def build_cowatch_map(user_recent_video_ids, all_video_ids):
     cowatch_scores = defaultdict(float)
     for entry in other_watches:
         vid = entry['video_id']
+        if vid is None:
+            continue
         count = entry['watch_count']
         cowatch_scores[vid] += count
 
