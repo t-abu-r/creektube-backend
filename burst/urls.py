@@ -25,6 +25,7 @@ import os
 urlpatterns = [
     path('admin/', admin.site.urls),
     path('api/', include('accounts.urls')),
+    path("api/", include('calls.urls')),
     path("api/token/refresh/", TokenRefreshView.as_view(), name="token_refresh"),
     path("media/", include('media.urls')),
     path("direct-chat/", include('directchat.urls')),

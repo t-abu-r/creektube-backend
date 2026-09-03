@@ -27,3 +27,6 @@ channels-redis==4.2.0
 redis==5.0.0
 daphne==4.1.2
 zope.interface>=7.0
+
+# LiveKit for real-time video calls
+livekit-api==1.0.0

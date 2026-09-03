@@ -168,6 +168,12 @@ CLOUDINARY_STORAGE = {
 # YouTube videos. Missing key = graceful fallback, native behavior unchanged.
 YOUTUBE_API_KEY = os.environ.get("YOUTUBE_API_KEY", "")
 
+# LiveKit (real-time video calls). Missing keys = the call feature is disabled
+# and the token endpoint returns a 503 rather than crashing.
+LIVEKIT_API_KEY = os.environ.get("LIVEKIT_API_KEY", "")
+LIVEKIT_API_SECRET = os.environ.get("LIVEKIT_API_SECRET", "")
+LIVEKIT_WS_URL = os.environ.get("LIVEKIT_WS_URL", "")
+
 # Shared YouTube result cache. Redis is used when REDIS_URL points at a
 # reachable (non-loopback) host so feed/search results survive worker restarts
 # and are shared across serverless instances; otherwise the in-process cache
