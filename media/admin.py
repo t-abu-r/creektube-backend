@@ -1,5 +1,5 @@
 from django.contrib import admin
-from .models import Video, Comment, MediaProfile, CategoryVideo, Snip, ModActionLog
+from .models import Video, Comment, MediaProfile, CategoryVideo, Snip, ModActionLog, Creek
 
 class VideoAdmin(admin.ModelAdmin):
     list_display = ['title', 'author', 'is_approved', 'timestamp', 'view_count']
@@ -33,3 +33,4 @@ admin.site.register(Comment)
 admin.site.register(MediaProfile)
 admin.site.register(CategoryVideo)
 admin.site.register(ModActionLog, ModActionLogAdmin)
+admin.site.register(Creek)

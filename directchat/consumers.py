@@ -79,11 +79,8 @@ class DirectChatConsumer(AsyncWebsocketConsumer):
         }
 
         # Save the message to database
-        await self.create_chatmodel(**message)
-
-        # Get the created ChatModel, format the chat log,
-        # then send it to the channel layer
-        chatmodel = await self.get_latest_chatmodel(**message)
+        chatmodel = await self.create_chatmodel(**message)
+        
         log = f'{chatmodel.log.date()} - {str(chatmodel.log.time())[:8]}'
         chatmodel = {
             'sender_username': self.user1_username,
