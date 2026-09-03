@@ -1,5 +1,6 @@
 from django.contrib import admin
-from .models import Video, Comment, MediaProfile, CategoryVideo, Snip, ModActionLog, Creek
+from .models import (Video, Comment, MediaProfile, CategoryVideo, Snip, ModActionLog,
+                     SnipDislike, SnipSave, SnipFeedback, Creek)
 
 class VideoAdmin(admin.ModelAdmin):
     list_display = ['title', 'author', 'is_approved', 'timestamp', 'view_count']
@@ -27,6 +28,22 @@ class ModActionLogAdmin(admin.ModelAdmin):
         return False
 
 
+class SnipDislikeAdmin(admin.ModelAdmin):
+    list_display = ['author', 'snip', 'created_at']
+    search_fields = ['author__username', 'snip__title']
+
+
+class SnipSaveAdmin(admin.ModelAdmin):
+    list_display = ['author', 'snip', 'created_at']
+    search_fields = ['author__username', 'snip__title']
+
+
+class SnipFeedbackAdmin(admin.ModelAdmin):
+    list_display = ['author', 'snip', 'kind', 'created_at']
+    list_filter = ['kind', 'created_at']
+    search_fields = ['author__username', 'snip__title']
+
+
 admin.site.register(Video, VideoAdmin)
 admin.site.register(Snip, SnipAdmin)
 admin.site.register(Comment)
@@ -34,3 +51,6 @@ admin.site.register(MediaProfile)
 admin.site.register(CategoryVideo)
 admin.site.register(ModActionLog, ModActionLogAdmin)
 admin.site.register(Creek)
+admin.site.register(SnipDislike, SnipDislikeAdmin)
+admin.site.register(SnipSave, SnipSaveAdmin)
+admin.site.register(SnipFeedback, SnipFeedbackAdmin)

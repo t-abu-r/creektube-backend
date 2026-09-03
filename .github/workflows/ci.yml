@@ -2,7 +2,7 @@ name: Django CI
 
 on:
   push:
-    branches: [ main, test ]
+    branches: [ main, test, feature/youtube-creektube-hybrid-test ]
 
 permissions:
   contents: write

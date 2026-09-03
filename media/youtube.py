@@ -1,0 +1,1163 @@
+"""YouTube source support for CreekTube.
+
+Native CreekTube videos are uploaded and hosted on Cloudinary; YouTube
+videos are referenced by their 11-character video ID and played through
+the official YouTube iframe embed. CreekTube never downloads, stores, or
+proxies YouTube media, and never injects ads of its own.
+
+This module is purely additive: all helpers degrade gracefully so that
+existing CreekTube behavior is unchanged even when no YouTube API key is
+configured.
+"""
+
+import json
+import logging
+import re
+import time
+
+import requests
+
+from django.utils import timezone
+
+from .content import classify_content_type, SNIP, VIDEO
+from .models import Like, Video
+from .tags import extract_hashtags
+
+logger = logging.getLogger(__name__)
+
+# YouTube video IDs are 11 characters from [A-Za-z0-9_-].
+YOUTUBE_ID_RE = re.compile(r"^[A-Za-z0-9_-]{11}$")
+WATCH_URL_RE = re.compile(r"youtube\.com/watch[^#]*\b[?&]v=([A-Za-z0-9_-]{11})")
+SHORTS_URL_RE = re.compile(r"youtube\.com/shorts/([A-Za-z0-9_-]{11})")
+EMBED_URL_RE = re.compile(r"youtube\.com/embed/([A-Za-z0-9_-]{11})")
+YOUDOTBE_URL_RE = re.compile(r"youtu\.be/([A-Za-z0-9_-]{11})")
+
+# YouTube Data API video category IDs mapped to CreekTube category slugs.
+# When a user watches a YouTube video, its category feeds the same interest
+# scoring that drives the CreekTube home feed, so unknown IDs fall back to a
+# sensible generic category instead of silently dropping the signal.
+YOUTUBE_CATEGORY_MAP = {
+    "1": {"slug": "film-animation", "name": "Film & Animation"},
+    "2": {"slug": "autos-vehicles", "name": "Autos & Vehicles"},
+    "10": {"slug": "music", "name": "Music"},
+    "15": {"slug": "pets-animals", "name": "Pets & Animals"},
+    "17": {"slug": "sports", "name": "Sports"},
+    "19": {"slug": "travel-events", "name": "Travel & Events"},
+    "20": {"slug": "gaming", "name": "Gaming"},
+    "21": {"slug": "vlogs", "name": "Vlogs"},
+    "22": {"slug": "vlogs", "name": "People & Blogs"},
+    "23": {"slug": "comedy", "name": "Comedy"},
+    "24": {"slug": "entertainment", "name": "Entertainment"},
+    "25": {"slug": "news", "name": "News & Politics"},
+    "26": {"slug": "howto", "name": "Howto & Style"},
+    "27": {"slug": "education", "name": "Education"},
+    "28": {"slug": "science-tech", "name": "Science & Technology"},
+    "29": {"slug": "nonprofits", "name": "Nonprofits & Activism"},
+    "30": {"slug": "movies", "name": "Movies"},
+    "31": {"slug": "animation", "name": "Animation"},
+    "41": {"slug": "shortform-videos", "name": "Shorts"},
+}
+
+# Generic fallback so every YouTube video maps to *some* CreekTube category.
+YOUTUBE_CATEGORY_FALLBACK = {"slug": "entertainment", "name": "Entertainment"}
+
+
+def youtube_category_for(category_id):
+    """Map a YouTube ``categoryId`` to a CreekTube ``{slug, name}`` dict.
+
+    Unknown/missing IDs fall back to the generic entertainment category so a
+    watch always produces a usable interest signal. Never raises.
+    """
+    try:
+        return dict(YOUTUBE_CATEGORY_MAP.get(str(category_id or "").strip(), YOUTUBE_CATEGORY_FALLBACK))
+    except Exception:
+        return dict(YOUTUBE_CATEGORY_FALLBACK)
+
+URL_PATTERNS = (WATCH_URL_RE, SHORTS_URL_RE, EMBED_URL_RE, YOUDOTBE_URL_RE)
+
+
+def validate_youtube_id(value):
+    """Return True if ``value`` is a plausible 11-character YouTube ID."""
+    return bool(value) and bool(YOUTUBE_ID_RE.match(value))
+
+
+def normalize_youtube_url(value):
+    """Extract a YouTube video ID from a URL or a raw ID.
+
+    Accepts ``watch?v=``, ``youtu.be/``, ``/embed/``, ``/shorts/`` links and
+    plain 11-character IDs. Returns the canonical video ID or ``None`` if the
+    input does not look like a YouTube video reference.
+    """
+    if not value or not isinstance(value, str):
+        return None
+    value = value.strip()
+    if validate_youtube_id(value):
+        return value
+    for pattern in URL_PATTERNS:
+        match = pattern.search(value)
+        if match:
+            return match.group(1)
+    return None
+
+
+def youtube_thumbnail_url(video_id):
+    """Standard YouTube thumbnail URL for a video ID (no download involved)."""
+    if not validate_youtube_id(video_id):
+        return ""
+    return f"https://i.ytimg.com/vi/{video_id}/hqdefault.jpg"
+
+
+def youtube_embed_url(video_id):
+    """Official YouTube iframe embed URL used by the frontend player."""
+    if not validate_youtube_id(video_id):
+        return ""
+    return f"https://www.youtube.com/embed/{video_id}"
+
+
+def youtube_duration_seconds(iso8601_duration):
+    """Convert a YouTube ``contentDetails.duration`` (ISO 8601) to seconds.
+
+    Supports ``PT#H#M#S``-style durations including decimal seconds, plus a
+    plain ``None``/empty fallback of 0 (unknown). Never raises.
+    """
+    if not iso8601_duration:
+        return 0
+    match = re.fullmatch(
+        r"P(?:(\d+(?:\.\d+)?)D)?(?:T(?:(\d+(?:\.\d+)?)H)?(?:(\d+(?:\.\d+)?)M)?(?:(\d+(?:\.\d+)?)S)?)?",
+        str(iso8601_duration).strip(),
+    )
+    if not match:
+        return 0
+    days, hours, minutes, seconds = match.groups()
+    total = 0.0
+    if days:
+        total += float(days) * 86400
+    if hours:
+        total += float(hours) * 3600
+    if minutes:
+        total += float(minutes) * 60
+    if seconds:
+        total += float(seconds)
+    return int(round(total))
+
+
+# ---------------------------------------------------------------------------
+# Feed mixing.
+#
+# The hybrid feed blends native CreekTube uploads with live YouTube results.
+# YouTube items are never persisted: they are fetched from the Data API per
+# feed request (with a short TTL cache) and shaped into the same JSON the
+# frontend already understands. A missing API key or a quota/network error
+# degrades to the native-only feed, so CreekTube behavior is never worse.
+# ---------------------------------------------------------------------------
+
+API_BASE = "https://www.googleapis.com/youtube/v3"
+# YouTube Data API v3 quotas: a search costs 100 units, a videos/details
+# lookup costs 1 unit. These knobs keep a single feed request well within
+# the daily 10k-unit budget.
+FEED_MAX_RESULTS_PER_QUERY = 20
+FEED_TOTAL_ITEMS = 40
+FEED_CACHE_TTL_SECONDS = 600
+
+# Fallback topics used when a user has no recorded interests yet.
+DEFAULT_FEED_QUERIES = ["music", "gaming", "vlogs", "science", "tech"]
+
+# How long (seconds) to pause all YouTube Data API calls after a quota or
+# rate-limit error, so an exhausted API is not hammered on every feed request.
+QUOTA_COOLDOWN_SECONDS = 600
+
+# Simple in-process TTL cache keyed by (kind, value). Safe across concurrent
+# requests and never raises. When a shared Redis cache is configured (see
+# settings.CACHES) the same results are mirrored there so they survive worker
+# restarts and are shared across serverless instances.
+_cache = {}
+
+# Last YouTube Data API error, used by ``youtube_api_status`` so views can tell
+# the frontend why a feed came back native-only. ``None`` when no error yet.
+_last_api_error = None
+
+# Monotonic timestamp until which API calls are skipped (circuit breaker).
+_quota_blocked_until = 0.0
+
+_QUOTA_REASONS = ("quotaExceeded", "dailyLimitExceeded", "rateLimitExceeded",
+                  "userRateLimitExceeded", "forbidden", "accessNotConfigured")
+
+
+def _shared_cache():
+    """Return the configured shared ``youtube`` cache backend or ``None``."""
+    try:
+        from django.core.cache import caches
+        from django.conf import settings
+    except Exception:
+        return None
+    if not getattr(settings, "YOUTUBE_SHARED_CACHE", False):
+        return None
+    try:
+        return caches["youtube"]
+    except Exception:
+        return None
+
+
+def _cache_get(key):
+    entry = _cache.get(key)
+    if entry and time.monotonic() - entry["ts"] <= entry["ttl"]:
+        return entry["value"]
+    shared = _shared_cache()
+    if shared is not None:
+        try:
+            value = shared.get(json.dumps(key, default=str))
+            if value is not None:
+                _cache[key] = {"ts": time.monotonic(), "value": value, "ttl": FEED_CACHE_TTL_SECONDS}
+                return value
+        except Exception:
+            pass
+    return None
+
+
+def _cache_set(key, value, ttl=FEED_CACHE_TTL_SECONDS):
+    _cache[key] = {"ts": time.monotonic(), "value": value, "ttl": ttl}
+    shared = _shared_cache()
+    if shared is not None:
+        try:
+            shared.set(json.dumps(key, default=str), value, timeout=ttl)
+        except Exception:
+            pass
+
+
+def _api_key():
+    from django.conf import settings
+
+    return (getattr(settings, "YOUTUBE_API_KEY", "") or "").strip()
+
+
+def _record_api_error(endpoint, status_code, reason, message):
+    """Remember the last YouTube API error and arm the quota circuit breaker."""
+    global _last_api_error, _quota_blocked_until
+    _last_api_error = {
+        "ts": time.monotonic(),
+        "endpoint": endpoint,
+        "code": status_code,
+        "reason": reason,
+        "message": message,
+    }
+    if status_code in (403, 429) or any(r in reason for r in _QUOTA_REASONS):
+        _quota_blocked_until = time.monotonic() + QUOTA_COOLDOWN_SECONDS
+        logger.error("YouTube %s quota/rate error %s (%s): %s", endpoint, status_code, reason, message)
+    else:
+        logger.warning("YouTube %s error %s (%s): %s", endpoint, status_code, reason, message)
+
+
+def youtube_api_status():
+    """Describe the most recent YouTube API error, or ``None``.
+
+    Views include this in their JSON payloads as ``youtube_error`` so the
+    frontend can surface a "YouTube is temporarily unavailable" banner instead
+    of silently showing an empty YouTube section. Errors older than five
+    minutes are treated as stale and not reported.
+    """
+    err = _last_api_error
+    if not err:
+        return None
+    if time.monotonic() - err["ts"] > 300:
+        return None
+    return {
+        "code": err["code"],
+        "reason": err["reason"],
+        "message": err["message"],
+        "endpoint": err["endpoint"],
+    }
+
+
+def _youtube_request(endpoint, params):
+    """Fire a YouTube Data API request. Returns parsed JSON or ``None``.
+
+    Quota/rate-limit failures (403/429) arm a short circuit-breaker so the app
+    stops calling an exhausted API; the error is recorded and exposed through
+    ``youtube_api_status``. All failures degrade to ``None`` (never raise).
+    """
+    if time.monotonic() < _quota_blocked_until:
+        return None
+    key = _api_key()
+    if not key:
+        return None
+    params = dict(params)
+    params["key"] = key
+    try:
+        response = requests.get(f"{API_BASE}/{endpoint}", params=params, timeout=8)
+        if response.status_code >= 400:
+            reason, message = "", ""
+            try:
+                body = response.json() or {}
+                error = body.get("error") or {}
+                reason = (((error.get("errors") or [{}])[0] or {}).get("reason") or "").strip()
+                message = (error.get("message") or "").strip()
+            except Exception:
+                pass
+            _record_api_error(endpoint, response.status_code, reason, message)
+            return None
+        return response.json()
+    except Exception as exc:
+        logger.warning("YouTube %s request failed: %s", endpoint, exc)
+        return None
+
+
+def _category_to_query(category_slug):
+    """Turn a CreekTube category slug into a YouTube search query."""
+    if not category_slug:
+        return ""
+    return category_slug.replace("-", " ").strip()
+
+
+def _feed_queries_for(user, interest_categories=None, feed="following", history_keywords=None, tag_queries=None):
+    """Build the list of YouTube search queries for a feed request.
+
+    Learned ``tag_queries`` rank first (a specific person/artist beats the
+    generic category), then the strongest interest category, then recent
+    ``history_keywords`` for discovery. Search is the most expensive call in
+    the YouTube Data API (100 units), so at most ONE query is returned and
+    the expensive default pool is dropped entirely — callers use the cheap
+    ``videos.list`` popular feed (1 unit) when there is no personalization.
+    """
+    queries = []
+    for tag in (tag_queries or [])[:3]:
+        tag = (tag or "").strip().lstrip("#")
+        if tag and tag not in queries:
+            queries.append(tag)
+            break
+    if not queries and interest_categories:
+        ranked_cats = sorted(
+            ((slug, score) for slug, score in interest_categories.items() if score > 0),
+            key=lambda pair: pair[1],
+            reverse=True,
+        )
+        for slug, _ in ranked_cats[:4]:
+            query = _category_to_query(slug)
+            if query and query not in queries:
+                queries.append(query)
+                break
+    if not queries:
+        for keyword in (history_keywords or [])[:3]:
+            keyword = (keyword or "").strip()
+            if keyword and keyword not in queries:
+                queries.append(keyword)
+                break
+    return queries[:1]
+
+
+def _popular_videos(max_results=FEED_MAX_RESULTS_PER_QUERY):
+    """Fetch YouTube's most popular videos via ``videos.list`` (1 unit).
+
+    This is the low-cost default feed used when a user has no recorded
+    interests yet: it avoids the 100-unit ``search`` endpoint entirely.
+    """
+    if not _api_key():
+        return []
+    cache_key = ("popular", max_results)
+    cached = _cache_get(cache_key)
+    if cached is not None:
+        return cached
+    data = _youtube_request("videos", {
+        "part": "snippet",
+        "chart": "mostPopular",
+        "maxResults": max_results,
+    })
+    items = (data or {}).get("items") or []
+    _cache_set(cache_key, items)
+    return items
+
+
+def youtube_search_results(query, max_results=FEED_MAX_RESULTS_PER_QUERY, extra_params=None):
+    """Search YouTube for ``query`` and return raw API items (cached).
+
+    ``extra_params`` are merged into the search request (e.g.
+    ``{"videoDuration": "short"}`` to only surface YouTube Shorts).
+    """
+    query = (query or "").strip()
+    if not query or not _api_key():
+        return []
+    cache_key = ("search", query, max_results, tuple(sorted((extra_params or {}).items())))
+    cached = _cache_get(cache_key)
+    if cached is not None:
+        return cached
+    params = {
+        "part": "snippet",
+        "type": "video",
+        "q": query,
+        "maxResults": max_results,
+        "safeSearch": "moderate",
+    }
+    if extra_params:
+        params.update(extra_params)
+    data = _youtube_request("search", params)
+    items = (data or {}).get("items") or []
+    _cache_set(cache_key, items)
+    return items
+
+
+def youtube_search_videos(query, limit=10):
+    """Search YouTube videos and return feed-ready dicts (with stats+durations).
+
+    Used by the search endpoint so YouTube results render exactly like native
+    feed items. Returns an empty list when the key is missing or calls fail.
+    """
+    items = []
+    seen = set()
+    for raw in youtube_search_results(query, max_results=limit + 2):
+        item = youtube_feed_item(raw)
+        if not item or item["id"] in seen:
+            continue
+        seen.add(item["id"])
+        items.append(item)
+        if len(items) >= limit:
+            break
+    if items:
+        ids = [item["id"] for item in items]
+        counts = _view_counts_for(ids)
+        durations = _durations_for(ids)
+        for item in items:
+            item["view_count"] = counts.get(item["id"], 0)
+            item["duration"] = durations.get(item["id"], 0)
+            item["content_type"] = classify_content_type(item["duration"])
+        _attach_youtube_enrichment(items)
+    return items
+
+
+YOUTUBE_CHANNEL_ID_RE = re.compile(r"UC[A-Za-z0-9_-]{22}")
+
+
+def validate_youtube_channel_id(value):
+    """Return True if ``value`` is a plausible 22-character channel ID."""
+    return bool(value) and bool(YOUTUBE_CHANNEL_ID_RE.fullmatch(value))
+
+
+def _channel_item(raw):
+    """Shape a raw YouTube channel search item into a channel dict."""
+    snippet = raw.get("snippet") or {}
+    channel_id = (snippet.get("channelId") or "").strip()
+    if not validate_youtube_channel_id(channel_id):
+        return None
+    thumbnails = snippet.get("thumbnails") or {}
+    thumbnail = (thumbnails.get("default") or {}).get("url") or ""
+    subscribers = None
+    try:
+        stats = raw.get("statistics") or {}
+        if stats.get("subscriberCount"):
+            subscribers = int(stats["subscriberCount"])
+    except (TypeError, ValueError):
+        subscribers = None
+    return {
+        "channel_id": channel_id,
+        "channel_name": (snippet.get("title") or "YouTube channel").strip(),
+        "channel_handle": (snippet.get("customUrl") or "").strip().lstrip("@"),
+        "channel_thumbnail": thumbnail,
+        "channel_description": (snippet.get("description") or "").strip(),
+        "subscriber_count": subscribers,
+        "video_count": None,
+    }
+
+
+def youtube_search_channels(query, limit=12):
+    """Search YouTube channels by name/handle (cached, never raises)."""
+    query = (query or "").strip()
+    if not query or not _api_key():
+        return []
+    cache_key = ("channels", query, limit)
+    cached = _cache_get(cache_key)
+    if cached is not None:
+        return cached
+    data = _youtube_request("search", {
+        "part": "snippet",
+        "type": "channel",
+        "q": query,
+        "maxResults": limit,
+        "safeSearch": "moderate",
+    })
+    items = (data or {}).get("items") or []
+    result = []
+    for raw in items:
+        item = _channel_item(raw)
+        if item:
+            result.append(item)
+        if len(result) >= limit:
+            break
+    if result:
+        _cache_set(cache_key, result)
+    return result
+
+
+def _view_counts_for(video_ids):
+    """Fetch view counts for up to 50 video IDs in a single API call."""
+    video_ids = [vid for vid in video_ids if validate_youtube_id(vid)]
+    if not video_ids or not _api_key():
+        return {}
+    cache_key = ("stats", ",".join(sorted(video_ids)))
+    cached = _cache_get(cache_key)
+    if cached is not None:
+        return cached
+    data = _youtube_request("videos", {
+        "part": "statistics",
+        "id": ",".join(video_ids[:50]),
+    })
+    counts = {}
+    for item in (data or {}).get("items") or []:
+        stats = item.get("statistics") or {}
+        raw = stats.get("viewCount") or "0"
+        try:
+            counts[item["id"]] = int(raw)
+        except (TypeError, ValueError):
+            counts[item["id"]] = 0
+    _cache_set(cache_key, counts)
+    return counts
+
+
+def _durations_for(video_ids):
+    """Fetch duration seconds for up to 50 video IDs in a single call.
+
+    Returns ``{video_id: seconds}``. Unknown/missing durations default to 0
+    so ``classify_content_type`` treats them as plain videos (never snips).
+    """
+    video_ids = [vid for vid in video_ids if validate_youtube_id(vid)]
+    if not video_ids or not _api_key():
+        return {}
+    cache_key = ("durations", ",".join(sorted(video_ids)))
+    cached = _cache_get(cache_key)
+    if cached is not None:
+        return cached
+    data = _youtube_request("videos", {
+        "part": "contentDetails",
+        "id": ",".join(video_ids[:50]),
+    })
+    durations = {}
+    for item in (data or {}).get("items") or []:
+        details = item.get("contentDetails") or {}
+        durations[item["id"]] = youtube_duration_seconds(details.get("duration"))
+    _cache_set(cache_key, durations)
+    return durations
+
+
+def youtube_like_counts_for(video_ids):
+    """Fetch YouTube like counts for up to 50 video IDs in a single call.
+
+    Returns ``{video_id: like_count}``. Unknown/missing counts default to 0.
+    """
+    video_ids = [vid for vid in video_ids if validate_youtube_id(vid)]
+    if not video_ids or not _api_key():
+        return {}
+    cache_key = ("likes", ",".join(sorted(video_ids)))
+    cached = _cache_get(cache_key)
+    if cached is not None:
+        return cached
+    data = _youtube_request("videos", {
+        "part": "statistics",
+        "id": ",".join(video_ids[:50]),
+    })
+    counts = {}
+    for item in (data or {}).get("items") or []:
+        stats = item.get("statistics") or {}
+        try:
+            counts[item["id"]] = int(stats.get("likeCount") or 0)
+        except (TypeError, ValueError):
+            counts[item["id"]] = 0
+    _cache_set(cache_key, counts)
+    return counts
+
+
+def youtube_channel_avatars_for(channel_ids):
+    """Fetch channel avatar URLs for up to 50 channel IDs (cached).
+
+    Returns ``{channel_id: thumbnail_url}``. Missing avatars are skipped.
+    """
+    channel_ids = [cid for cid in channel_ids if validate_youtube_channel_id(cid)]
+    if not channel_ids or not _api_key():
+        return {}
+    cache_key = ("chanavatars", ",".join(sorted(channel_ids)))
+    cached = _cache_get(cache_key)
+    if cached is not None:
+        return cached
+    data = _youtube_request("channels", {
+        "part": "snippet",
+        "id": ",".join(channel_ids[:50]),
+    })
+    result = {}
+    for item in (data or {}).get("items") or []:
+        snippet = item.get("snippet") or {}
+        cid = (item.get("id") or "").strip()
+        if not cid:
+            continue
+        thumbnails = snippet.get("thumbnails") or {}
+        url = (
+            (thumbnails.get("medium") or {}).get("url")
+            or (thumbnails.get("default") or {}).get("url")
+            or ""
+        )
+        if url:
+            result[cid] = url
+    if result:
+        _cache_set(cache_key, result)
+    return result
+
+
+def _attach_creek_like_state(items, user):
+    """Attach CreekTube like counts and like state to feed-ready item dicts.
+
+    YouTube shows its own like count (``youtube_like_count``) alongside the
+    CreekTube like (``creek_like_count`` + ``is_liked``) which is tracked
+    against the materialized row owned by the reserved system account.
+    """
+    if not items:
+        return items
+    ids = [item.get("id") for item in items if validate_youtube_id(item.get("id"))]
+    if not ids:
+        return items
+    rows = {
+        v.youtube_video_id: v
+        for v in Video.objects.filter(source_type="YOUTUBE", youtube_video_id__in=ids)
+    }
+    liked_ids = set()
+    if user is not None and user.is_authenticated:
+        liked_ids = set(
+            Like.objects.filter(author=user, video__youtube_video_id__in=ids)
+            .values_list("video__youtube_video_id", flat=True)
+        )
+    for item in items:
+        vid = item.get("id")
+        row = rows.get(vid)
+        item["creek_like_count"] = row.likes.count() if row else 0
+        item["is_liked"] = vid in liked_ids
+    return items
+
+
+def _attach_youtube_enrichment(items, user=None):
+    """Attach like counts and channel avatars to feed-ready item dicts."""
+    if not items:
+        return items
+    ids = [item.get("id") for item in items]
+    likes = youtube_like_counts_for(ids)
+    avatars = youtube_channel_avatars_for(
+        [item.get("youtube_channel_id") for item in items]
+    )
+    for item in items:
+        vid = item.get("id")
+        if vid:
+            item["like_count"] = likes.get(vid, 0)
+            item["youtube_like_count"] = likes.get(vid, 0)
+        channel_id = item.get("youtube_channel_id")
+        if channel_id and avatars.get(channel_id):
+            item["author_avatar"] = avatars[channel_id]
+    _attach_creek_like_state(items, user)
+    return items
+
+
+def youtube_feed_item(item, category_slug="", category_name="", view_count=None, duration=None):
+    """Shape a raw YouTube search API item into a feed-ready video dict.
+
+    The shape mirrors what ``VideoSerializer`` already returns so the
+    frontend (VideoCard + WatchVideo) can render YouTube and CreekTube
+    content uniformly. ``duration`` (seconds) is set when known; otherwise
+    the item is left as a plain VIDEO.
+    """
+    raw_id = item.get("id")
+    if isinstance(raw_id, dict):
+        video_id = ((raw_id or {}).get("videoId") or "").strip()
+    else:
+        video_id = (raw_id or "").strip()
+    if not validate_youtube_id(video_id):
+        return None
+    snippet = item.get("snippet") or {}
+    now = timezone.now().isoformat()
+    return {
+        "id": video_id,
+        "category": category_slug or "",
+        "category_name": category_name or "",
+        "title": (snippet.get("title") or "YouTube video").strip(),
+        "description": (snippet.get("description") or "").strip(),
+        "thumbnail": youtube_thumbnail_url(video_id),
+        "video": None,
+        "timestamp": (snippet.get("publishedAt") or now),
+        "is_approved": True,
+        "author": (snippet.get("channelTitle") or "YouTube").strip(),
+        "author_id": None,
+        "author_avatar": None,
+        "author_active": True,
+        "comments": [],
+        "view_count": view_count or 0,
+        "like_count": 0,
+        "source_type": "YOUTUBE",
+        "content_type": classify_content_type(duration),
+        "duration": duration or 0,
+        "youtube_video_id": video_id,
+        "youtube_channel_id": (snippet.get("channelId") or "").strip(),
+        "youtube_channel_name": (snippet.get("channelTitle") or "").strip(),
+        "embed_url": youtube_embed_url(video_id),
+        "tags": extract_hashtags(snippet.get("title"), snippet.get("description")),
+    }
+
+
+def build_youtube_feed(user=None, interest_categories=None, limit=FEED_TOTAL_ITEMS, feed=None, history_keywords=None, tag_queries=None):
+    """Build a list of live YouTube feed items.
+
+    ``user`` may be None (guest). Interests come from the user's MediaProfile
+    categories (``{category_slug: score}``). ``tag_queries`` (learned hashtags)
+    are queried first because tags outrank categories. ``history_keywords`` (a
+    list of recent search/history terms) are mixed in for discovery. Returns
+    an empty list whenever the API key is missing or the calls fail, so the
+    native feed is never harmed.
+    """
+    if not _api_key() or limit <= 0:
+        return []
+
+    queries = _feed_queries_for(user, interest_categories, feed=feed, history_keywords=history_keywords, tag_queries=tag_queries)
+    items = []
+    seen_ids = set()
+    if queries:
+        query = queries[0]
+        for raw in youtube_search_results(query):
+            item = youtube_feed_item(raw, category_slug=query, category_name=query.title())
+            if not item or item["id"] in seen_ids:
+                continue
+            seen_ids.add(item["id"])
+            items.append(item)
+    else:
+        # No personalization signals yet: use the cheap popular pool instead
+        # of burning 5x100 search units on a generic default query set.
+        for raw in _popular_videos():
+            item = youtube_feed_item(raw, category_slug="", category_name="Popular")
+            if not item or item["id"] in seen_ids:
+                continue
+            seen_ids.add(item["id"])
+            items.append(item)
+
+    items = items[:limit]
+    if items:
+        counts = _view_counts_for([item["id"] for item in items])
+        durations = _durations_for([item["id"] for item in items])
+        for item in items:
+            item["view_count"] = counts.get(item["id"], 0)
+            item["duration"] = durations.get(item["id"], 0)
+            item["content_type"] = classify_content_type(item["duration"])
+        _attach_youtube_enrichment(items, user=user)
+        # YouTube Shorts belong in the Snips feed, not the main video feed.
+        items = [item for item in items if item.get("content_type") != SNIP]
+    return items
+
+
+def build_youtube_snips_feed(user=None, interest_categories=None, limit=FEED_TOTAL_ITEMS, feed=None, history_keywords=None, tag_queries=None):
+    """Build a list of live YouTube Shorts for the Snips feed.
+
+    Same shape as ``build_youtube_feed`` but only short-form content is kept.
+    A single ``search`` query (100 units) is used when the user has signals;
+    otherwise the 1-unit ``videos.list`` popular pool is filtered client-side
+    for shorts so a fresh user still costs almost nothing. Durations are
+    always double-checked so an item is only ever labelled ``SNIP`` when it is
+    actually under the Snip threshold.
+    """
+    if not _api_key() or limit <= 0:
+        return []
+
+    queries = _feed_queries_for(user, interest_categories, feed=feed, history_keywords=history_keywords, tag_queries=tag_queries)
+    items = []
+    seen_ids = set()
+    if queries:
+        query = queries[0]
+        for raw in youtube_search_results(query, extra_params={"videoDuration": "short"}):
+            item = youtube_feed_item(raw, category_slug=query, category_name=query.title())
+            if not item or item["id"] in seen_ids:
+                continue
+            seen_ids.add(item["id"])
+            items.append(item)
+    else:
+        # No personalization: reuse the cheap popular pool and keep only the
+        # items that turn out to be actual shorts after duration lookup.
+        for raw in _popular_videos():
+            item = youtube_feed_item(raw, category_slug="", category_name="Popular")
+            if not item or item["id"] in seen_ids:
+                continue
+            seen_ids.add(item["id"])
+            items.append(item)
+
+    items = items[:limit]
+    if items:
+        counts = _view_counts_for([item["id"] for item in items])
+        durations = _durations_for([item["id"] for item in items])
+        for item in items:
+            item["view_count"] = counts.get(item["id"], 0)
+            item["duration"] = durations.get(item["id"], 0)
+            item["content_type"] = classify_content_type(item["duration"])
+        _attach_youtube_enrichment(items, user=user)
+        # Only true shorts belong in the Snips feed.
+        items = [item for item in items if item.get("content_type") == SNIP]
+    return items
+
+
+def youtube_system_user():
+    """Return the reserved active account that owns materialized YouTube rows.
+
+    YouTube videos/shorts that are stored as lightweight CreekTube rows (so
+    likes/comments persist) are owned by this system account, never by the
+    user who happened to like them. The author shown to viewers comes from the
+    real YouTube channel metadata instead.
+    """
+    from django.contrib.auth.models import User
+
+    user, _ = User.objects.get_or_create(
+        username=YOUTUBE_SYSTEM_USERNAME,
+        defaults={"is_active": True},
+    )
+    return user
+
+
+YOUTUBE_SYSTEM_USERNAME = "youtube_system"
+
+
+def get_youtube_video_details(video_id):
+    """Fetch one video's snippet + statistics + contentDetails.
+
+    Returns a feed-ready dict (including ``duration`` and ``content_type``)
+    so a YouTube ID that isn't stored as a CreekTube row can still be played
+    through the iframe embed.
+    """
+    if not validate_youtube_id(video_id) or not _api_key():
+        return None
+    cache_key = ("video", video_id)
+    cached = _cache_get(cache_key)
+    if cached is not None:
+        return cached
+    data = _youtube_request("videos", {"part": "snippet,statistics,contentDetails", "id": video_id})
+    items = (data or {}).get("items") or []
+    if not items:
+        return None
+    snippet = items[0].get("snippet") or {}
+    stats = items[0].get("statistics") or {}
+    details = items[0].get("contentDetails") or {}
+    try:
+        view_count = int(stats.get("viewCount") or 0)
+    except (TypeError, ValueError):
+        view_count = 0
+    try:
+        like_count = int(stats.get("likeCount") or 0)
+    except (TypeError, ValueError):
+        like_count = 0
+    duration = youtube_duration_seconds(details.get("duration"))
+    category = youtube_category_for(snippet.get("categoryId"))
+    item = {
+        "id": video_id,
+        "snippet": snippet,
+    }
+    shaped = youtube_feed_item(
+        item,
+        category_slug=category["slug"],
+        category_name=category["name"],
+        view_count=view_count,
+        duration=duration,
+    )
+    if shaped:
+        shaped["content_type"] = classify_content_type(duration)
+        shaped["category"] = category["slug"]
+        shaped["category_name"] = category["name"]
+        shaped["like_count"] = like_count
+        _attach_youtube_enrichment([shaped])
+        _cache_set(cache_key, shaped)
+    return shaped
+
+
+def youtube_related_videos(video_id, limit=12):
+    """Suggest related YouTube videos for a YouTube watch page.
+
+    Uses the video's own title as the search query, so results are topical.
+    """
+    if not validate_youtube_id(video_id) or not _api_key():
+        return []
+    details = get_youtube_video_details(video_id) or {}
+    title = details.get("title", "")
+    if not title:
+        return []
+    related = []
+    seen = {video_id}
+    for raw in youtube_search_results(title, max_results=limit + 2):
+        item = youtube_feed_item(raw)
+        if not item or item["id"] in seen:
+            continue
+        seen.add(item["id"])
+        related.append(item)
+        if len(related) >= limit:
+            break
+    _attach_youtube_enrichment(related)
+    return related
+
+
+def get_video_metadata(video_id):
+    """Fetch YouTube video metadata through the Data API (v3 ``videos``).
+
+    Requires ``YOUTUBE_API_KEY`` in the environment. Returns a dict with
+    ``title``, ``description``, ``thumbnail``, ``channel_id`` and
+    ``channel_name``, or ``None`` when the key is missing or the call fails.
+    Never raises: errors are logged and the caller falls back gracefully.
+    """
+    from django.conf import settings
+
+    api_key = getattr(settings, "YOUTUBE_API_KEY", "")
+    if not api_key or not validate_youtube_id(video_id):
+        return None
+
+    try:
+        response = requests.get(
+            "https://www.googleapis.com/youtube/v3/videos",
+            params={"part": "snippet", "id": video_id, "key": api_key},
+            timeout=8,
+        )
+        response.raise_for_status()
+        items = response.json().get("items") or []
+        if not items:
+            return None
+        snippet = items[0].get("snippet") or {}
+        category = youtube_category_for(snippet.get("categoryId"))
+        return {
+            "title": (snippet.get("title") or "").strip(),
+            "description": (snippet.get("description") or "").strip(),
+            "thumbnail": youtube_thumbnail_url(video_id),
+            "channel_id": (snippet.get("channelId") or "").strip(),
+            "channel_name": (snippet.get("channelTitle") or "").strip(),
+            "category_id": (snippet.get("categoryId") or "").strip(),
+            "category": category["slug"],
+            "category_name": category["name"],
+        }
+    except Exception as exc:
+        logger.warning("YouTube metadata fetch failed for %s: %s", video_id, exc)
+        return None
+
+
+def _youtube_comment_dict(item, parent=None):
+    """Shape a single commentThread/comment resource into a comment dict."""
+    snippet = item.get("snippet") or {}
+    text = (snippet.get("textDisplay") or "").strip()
+    if not text:
+        return None
+    author = snippet.get("authorDisplayName") or ""
+    author_channel_id = (snippet.get("authorChannelId") or {}).get("value") or ""
+    avatars = youtube_channel_avatars_for([author_channel_id]) if author_channel_id else {}
+    author_avatar = (
+        (snippet.get("authorProfileImageUrl") or "").strip()
+        or avatars.get(author_channel_id, "")
+    )
+    try:
+        like_count = int(snippet.get("likeCount") or 0)
+    except (TypeError, ValueError):
+        like_count = 0
+    result = {
+        "id": str(item.get("id") or ""),
+        "text": text,
+        "author": author or "Anonymous",
+        "author_avatar": author_avatar,
+        "author_id": None,
+        "user_id": None,
+        "timestamp": _youtube_comment_time(snippet.get("publishedAt")),
+        "edited": False,
+        "parent": parent,
+        "likes_count": like_count,
+        "is_liked": False,
+        "is_pinned": bool(snippet.get("isPinned")),
+        "source": "youtube",
+        "read_only": True,
+        "replies": [],
+    }
+    return result
+
+
+def _youtube_comment_time(value):
+    """Parse an ISO-8601 YouTube timestamp into an epoch millisecond value."""
+    if not value:
+        return 0
+    try:
+        from datetime import datetime, timezone
+
+        parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+        if parsed.tzinfo is None:
+            parsed = parsed.replace(tzinfo=timezone.utc)
+        return int(parsed.timestamp() * 1000)
+    except Exception:
+        return 0
+
+
+def youtube_comments(video_id, max_results=20):
+    """Fetch top YouTube comments (with replies) for a video.
+
+    Returns a flat list of comment dicts shaped like CreekTube comments but
+    flagged ``source="youtube"`` / ``read_only=True`` so the frontend knows
+    they are read-only. Threads are flattened with top-level comments first,
+    each followed by its replies (``parent`` = top-level id).
+    """
+    if not validate_youtube_id(video_id) or not _api_key():
+        return []
+    cache_key = ("comments", video_id)
+    cached = _cache_get(cache_key)
+    if cached is not None:
+        return cached
+    data = _youtube_request("commentThreads", {
+        "part": "snippet,replies",
+        "videoId": video_id,
+        "maxResults": min(max_results, 100),
+        "order": "relevance",
+        "textFormat": "plainText",
+    })
+    comments = []
+    for item in (data or {}).get("items") or []:
+        thread = item.get("snippet") or {}
+        # The actual top-level comment lives inside ``topLevelComment``; the
+        # thread snippet itself has no ``textDisplay``.
+        top_level = thread.get("topLevelComment") or {}
+        top = _youtube_comment_dict(top_level, parent=None)
+        if not top:
+            continue
+        top_id = top["id"]
+        replies = []
+        for reply in (item.get("replies") or {}).get("comments") or []:
+            shaped = _youtube_comment_dict(reply, parent=top_id)
+            if shaped:
+                replies.append(shaped)
+        top["replies"] = replies
+        comments.append(top)
+    if comments:
+        _cache_set(cache_key, comments, ttl=300)
+    return comments
+
+
+def youtube_channel(channel_id):
+    """Fetch YouTube channel details (snippet + statistics + branding).
+
+    Returns a dict with ``channel_id``, ``channel_name``, ``channel_handle``,
+    ``channel_thumbnail``, ``channel_banner``, ``channel_description``,
+    ``subscriber_count``, ``video_count``, ``view_count``, ``country`` and
+    ``published_at``, or ``None``.
+    """
+    if not validate_youtube_channel_id(channel_id) or not _api_key():
+        return None
+    cache_key = ("channel", channel_id)
+    cached = _cache_get(cache_key)
+    if cached is not None:
+        return cached
+    data = _youtube_request("channels", {
+        "part": "snippet,statistics,brandingSettings",
+        "id": channel_id,
+    })
+    items = (data or {}).get("items") or []
+    if not items:
+        return None
+    snippet = items[0].get("snippet") or {}
+    stats = items[0].get("statistics") or {}
+    branding = items[0].get("brandingSettings") or {}
+    image = branding.get("image") or {}
+    thumbnails = snippet.get("thumbnails") or {}
+    def _safe_int(value):
+        try:
+            return int(value or 0)
+        except (TypeError, ValueError):
+            return 0
+    handle = (snippet.get("customUrl") or "").strip()
+    if handle and not handle.startswith("@"):
+        handle = "@" + handle
+    result = {
+        "channel_id": channel_id,
+        "channel_name": (snippet.get("title") or "").strip(),
+        "channel_handle": handle,
+        "channel_thumbnail": (
+            (thumbnails.get("high") or {}).get("url")
+            or (thumbnails.get("medium") or {}).get("url")
+            or (thumbnails.get("default") or {}).get("url")
+            or ""
+        ),
+        "channel_banner": (image.get("bannerImageUrl") or "").strip(),
+        "channel_description": (snippet.get("description") or "").strip(),
+        "subscriber_count": _safe_int(stats.get("subscriberCount")),
+        "video_count": _safe_int(stats.get("videoCount")),
+        "view_count": _safe_int(stats.get("viewCount")),
+        "country": (snippet.get("country") or "").strip(),
+        "published_at": _youtube_comment_time(snippet.get("publishedAt")),
+        "source_type": "YOUTUBE",
+    }
+    _cache_set(cache_key, result, ttl=900)
+    return result
+
+
+def _channel_uploads_playlist_id(channel_id):
+    """Fetch a channel's uploads playlist ID via ``channels.list`` (1 unit).
+
+    ``search.list`` costs 100 units per call; ``playlistItems.list`` costs 1.
+    Resolving the uploads playlist once lets channel feeds use the cheap
+    endpoint instead. Returns the playlist ID or ``None``.
+    """
+    if not validate_youtube_channel_id(channel_id) or not _api_key():
+        return None
+    cache_key = ("uploads", channel_id)
+    cached = _cache_get(cache_key)
+    if cached is not None:
+        return cached
+    data = _youtube_request("channels", {
+        "part": "contentDetails",
+        "id": channel_id,
+    })
+    playlist_id = None
+    for item in (data or {}).get("items") or []:
+        details = item.get("contentDetails") or {}
+        related = details.get("relatedPlaylists") or {}
+        playlist_id = (related.get("uploads") or "").strip()
+        if playlist_id:
+            break
+    if playlist_id:
+        _cache_set(cache_key, playlist_id, ttl=900)
+    return playlist_id
+
+
+def youtube_channel_videos(channel_id, limit=24, duration="any"):
+    """List a YouTube channel's recent uploads as feed-ready item dicts.
+
+    Uses the channel's uploads playlist (``playlistItems.list``, 1 unit) plus
+    a ``videos.list`` lookup for durations — never the 100-unit ``search``
+    endpoint. ``duration`` mirrors the Data API ``videoDuration`` filter
+    ("any", "short", "long", "medium") so a channel's Snips can be listed
+    separately from its regular uploads.
+    """
+    if duration not in ("any", "short", "long", "medium"):
+        duration = "any"
+    if not validate_youtube_channel_id(channel_id) or not _api_key():
+        return []
+    cache_key = ("chanvideos", channel_id, limit, duration)
+    cached = _cache_get(cache_key)
+    if cached is not None:
+        return cached
+    playlist_id = _channel_uploads_playlist_id(channel_id)
+    if not playlist_id:
+        return []
+    data = _youtube_request("playlistItems", {
+        "part": "snippet",
+        "playlistId": playlist_id,
+        "maxResults": min(limit + 4, 50),
+    })
+    items = []
+    for raw in (data or {}).get("items") or []:
+        snippet = raw.get("snippet") or {}
+        resource = snippet.get("resourceId") or {}
+        video_id = (resource.get("videoId") or "").strip()
+        if not validate_youtube_id(video_id):
+            continue
+        # Reuse the search-item shape: the video id lives in resourceId.
+        item = youtube_feed_item({"id": {"videoId": video_id}, "snippet": snippet})
+        if not item:
+            continue
+        items.append(item)
+        if len(items) >= limit:
+            break
+    if items:
+        counts = _view_counts_for([item["id"] for item in items])
+        durations = _durations_for([item["id"] for item in items])
+        for item in items:
+            item["view_count"] = counts.get(item["id"], 0)
+            item["duration"] = durations.get(item["id"], 0)
+            item["content_type"] = classify_content_type(item["duration"])
+        if duration != "any":
+            if duration == "short":
+                items = [item for item in items if item.get("content_type") == SNIP]
+            else:
+                items = [item for item in items if item.get("content_type") != SNIP]
+        _attach_youtube_enrichment(items)
+        _cache_set(cache_key, items, ttl=600)
+    return items

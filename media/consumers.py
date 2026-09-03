@@ -30,22 +30,21 @@ class SnipFeedConsumer(AsyncWebsocketConsumer):
     async def connect(self):
         self.user = self.scope.get("user")
         self.room_snip_ids = set()
+        self._channel_ok = True
 
-        await self.channel_layer.group_add(self.GROUP_NAME, self.channel_name)
+        await self._group_add()
         await self.accept()
 
         count = await self.get_viewer_count()
-        await self.channel_layer.group_send(
-            self.GROUP_NAME,
+        await self._group_send(
             {"type": "viewer_count", "count": count},
         )
 
     async def disconnect(self, close_code):
-        await self.channel_layer.group_discard(self.GROUP_NAME, self.channel_name)
+        await self._group_discard()
 
         count = await self.get_viewer_count()
-        await self.channel_layer.group_send(
-            self.GROUP_NAME,
+        await self._group_send(
             {"type": "viewer_count", "count": max(count, 0)},
         )
 
@@ -61,8 +60,7 @@ class SnipFeedConsumer(AsyncWebsocketConsumer):
         if action == "like" and snip_id:
             result = await self.toggle_like(snip_id)
             if result:
-                await self.channel_layer.group_send(
-                    self.GROUP_NAME,
+                await self._group_send(
                     {
                         "type": "like_update",
                         "snip_id": snip_id,
@@ -74,14 +72,40 @@ class SnipFeedConsumer(AsyncWebsocketConsumer):
         elif action == "view" and snip_id:
             view_count = await self.record_view(snip_id)
             if view_count is not None:
-                await self.channel_layer.group_send(
-                    self.GROUP_NAME,
+                await self._group_send(
                     {
                         "type": "view_update",
                         "snip_id": snip_id,
                         "view_count": view_count,
                     },
                 )
+
+    # ---- channel layer helpers (resilient to missing/unreachable Redis) ----
+    # A WebSocket connection must never die because the group/backplane is
+    # unavailable (e.g. serverless instances with no Redis). Broadcasts simply
+    # degrade to per-instance or none.
+
+    async def _group_add(self):
+        try:
+            await self.channel_layer.group_add(self.GROUP_NAME, self.channel_name)
+        except Exception:
+            self._channel_ok = False
+
+    async def _group_discard(self):
+        if not getattr(self, "_channel_ok", True):
+            return
+        try:
+            await self.channel_layer.group_discard(self.GROUP_NAME, self.channel_name)
+        except Exception:
+            pass
+
+    async def _group_send(self, payload):
+        if not getattr(self, "_channel_ok", True):
+            return
+        try:
+            await self.channel_layer.group_send(self.GROUP_NAME, payload)
+        except Exception:
+            pass
 
     # ---- group message handlers ----
 

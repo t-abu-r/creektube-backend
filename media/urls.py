@@ -12,10 +12,13 @@ urlpatterns = [
 
     # VIDEO/RELATED UPLOAD!!!!
     path("uploadvideo/", UploadVideo.as_view(), name="UploadVideo"),
+    path("youtube/add/", AddYouTubeVideo.as_view(), name="AddYouTubeVideo"),
     path("uploadcommentvideo/", UploadCommentVideo.as_view(), name="UploadCommentVideo"),
     path("pikevideo/", PikeVideo.as_view(), name="PikeVideo"),
     path("dispikevideo/", DisPikeVideo.as_view(), name="DisPikeVideo"),
     path("creekaccount/", CreekAccount.as_view(), name="CreekAccount"),
+    path("creek-youtube-channel/", CreekYouTubeChannel.as_view(), name="CreekYouTubeChannel"),
+    path("youtube-follows/", YouTubeFollows.as_view(), name="YouTubeFollows"),
 
 
     path("categories/", Categories.as_view(), name="Categories"),
@@ -23,6 +26,7 @@ urlpatterns = [
     path("interests/<str:tag>/", InterestTag.as_view(), name="InterestTag"),
     path("comment/", CommentVideo.as_view(), name="CommentVideo"),
     path("pincomment/", PinComment.as_view(), name="PinComment"),
+    path("youtube/channel/", YouTubeChannel.as_view(), name="YouTubeChannel"),
     # MOD PANEL
     path("mod-panel/", ModPanel.as_view()),
     path("set-account-active/", SetAccountActive.as_view(), name="SetAccountActive"),
@@ -53,6 +57,12 @@ urlpatterns = [
     path("snip/feed/", SnipFeed.as_view(), name="SnipFeed"),
     path("snip/watch/", WatchSnip.as_view(), name="WatchSnip"),
     path("snip/like/", LikeSnip.as_view(), name="LikeSnip"),
+    path("snip/dislike/", DislikeSnip.as_view(), name="DislikeSnip"),
+    path("snip/save/", SaveSnip.as_view(), name="SaveSnip"),
+    path("snip/saved/", GetSavedSnips.as_view(), name="GetSavedSnips"),
+    path("snip/feedback/", SnipFeedbackView.as_view(), name="SnipFeedback"),
+    path("snip/related/", RelatedSnips.as_view(), name="RelatedSnips"),
+    path("snip/search/", SnipSearch.as_view(), name="SnipSearch"),
     path("snip/own/", GetOwnSnips.as_view(), name="GetOwnSnips"),
     path("snip/delete/<int:snip_id>/", SnipDelete.as_view(), name="SnipDelete"),
     path("snip/comments/", SnipCommentList.as_view(), name="SnipCommentList"),
