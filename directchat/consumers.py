@@ -2,12 +2,16 @@ import asyncio
 import json
 import logging
 import uuid
-from channels.generic.websocket import AsyncWebsocketConsumer
-from channels.db import database_sync_to_async
+from asgiref.sync import sync_to_async
+
 from django.contrib.auth.models import User
 from django.db import models
 
+from channels.generic.websocket import AsyncWebsocketConsumer
+from channels.db import database_sync_to_async
+
 from .models import SenderModel, ReceiverModel, ChatModel, ChatKeyModel
+from .serializers import _user_avatar
 
 logger = logging.getLogger("directchat.consumer")
 
@@ -28,6 +32,8 @@ class DirectChatConsumer(AsyncWebsocketConsumer):
             await self.close(code=404)
             return
 
+        self.user1 = user1
+        self.user2 = user2
         self.user1_username = user1.get_username()
         self.user2_username = user2.get_username()
         self.user1_sender = await self.get_or_create_sendermodel(user=user1)
@@ -165,12 +171,60 @@ class DirectChatConsumer(AsyncWebsocketConsumer):
             }
         )
 
+        # Push a live conversation update to each participant's own
+        # per-user group so the right rail / chats sidebar reorders and
+        # shows the new message even when the chat window is closed.
+        for viewer, other, incoming in (
+            (self.user1, self.user2, False),
+            (self.user2, self.user1, True),
+        ):
+            payload = await self.build_conversation_update(
+                viewer, other, chatmodel, incoming
+            )
+            try:
+                await self.channel_layer.group_send(
+                    f"user_{viewer.id}",
+                    {
+                        "type": "notify.user",
+                        "event": payload,
+                    },
+                )
+            except Exception:
+                logger.exception("Failed to send conversation update "
+                                 "to user=%s", viewer.id)
+
     async def send_message(self, event):
         message = json.dumps({
             'chatmodel': event['chatmodel'],
             'message_id': event.get('message_id', uuid.uuid4().hex),
         })
         await self.send(text_data=message)
+
+    @database_sync_to_async
+    def build_conversation_update(self, viewer, other, chatmodel, incoming):
+        me_sender, _ = SenderModel.objects.get_or_create(user=viewer)
+        me_receiver, _ = ReceiverModel.objects.get_or_create(user=viewer)
+        other_sender, _ = SenderModel.objects.get_or_create(user=other)
+        other_receiver, _ = ReceiverModel.objects.get_or_create(user=other)
+        unread = ChatModel.objects.filter(
+            sender=other_sender,
+            receiver=me_receiver,
+            is_read=False,
+        ).count()
+        return {
+            "type": "conversation_update",
+            "incoming": incoming,
+            "conversation": {
+                "id": other.id,
+                "username": other.username,
+                "avatar": _user_avatar(other),
+                "last_message": chatmodel.text,
+                "last_message_at": chatmodel.log.isoformat(),
+                "last_sender_username": self.user1_username,
+                "unread": unread > 0,
+                "unread_count": unread,
+            },
+        }
 
     @database_sync_to_async
     def _get_messages_after(self, after_id):

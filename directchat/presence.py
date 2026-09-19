@@ -55,6 +55,9 @@ class PresenceConsumer(AsyncWebsocketConsumer):
 
         await self.accept()
         await self.channel_layer.group_add(GROUP_NAME, self.channel_name)
+        await self.channel_layer.group_add(
+            f"user_{self.user.id}", self.channel_name
+        )
         await self.send_online_users_list()
 
         if self.visible:
@@ -90,6 +93,9 @@ class PresenceConsumer(AsyncWebsocketConsumer):
                         GROUP_NAME, self.channel_name
                     )
                     await self.broadcast_status(self.user, "offline")
+                await self.channel_layer.group_discard(
+                    f"user_{self.user.id}", self.channel_name
+                )
                 await self.mark_user_status(self.user, None, online=False)
                 await self._expire_presence_redis()
             except Exception:
@@ -176,6 +182,12 @@ class PresenceConsumer(AsyncWebsocketConsumer):
             "username": event["username"],
             "status": event["status"],
         }))
+
+    async def notify_user(self, event):
+        """Forward conversation/message updates targeted at this user."""
+        payload = event.get("event") or {}
+        payload.setdefault("type", "conversation_update")
+        await self.send(text_data=json.dumps(payload))
 
     async def broadcast_status(self, user, status):
         await self.channel_layer.group_send(
