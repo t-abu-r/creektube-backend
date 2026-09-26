@@ -59,13 +59,7 @@ class ChatKeyModel(models.Model):
 
     @classmethod
     def get_by_usernames(cls, usernames):
-        chatkeys = cls.objects.all()
-        usernames.sort()
-        for chatkey in chatkeys:
-            chatkey.usernames.sort()
-            if chatkey.usernames == usernames:
-                return chatkey
-        return None
+        return cls.objects.filter(pair_key=cls.make_pair_key(usernames)).first()
 
 
 class OnlineUser(models.Model):
