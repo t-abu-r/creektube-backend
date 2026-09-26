@@ -10,7 +10,7 @@ from django.db import models
 from channels.generic.websocket import AsyncWebsocketConsumer
 from channels.db import database_sync_to_async
 
-from .models import SenderModel, ReceiverModel, ChatModel, ChatKeyModel
+from .models import *
 from .serializers import _user_avatar
 
 logger = logging.getLogger("directchat.consumer")
@@ -278,3 +278,86 @@ class DirectChatConsumer(AsyncWebsocketConsumer):
     @database_sync_to_async
     def create_chatmodel(self, **kwargs):
         return ChatModel.objects.create(**kwargs)
+
+#  Live Dock Chat messages
+class DirectChatDockConsumer(AsyncWebsocketConsumer):
+
+    PING_INTERVAL = 25  # seconds between pings
+    PONG_TIMEOUT = 10
+
+    async def connect(self):
+        user1 = self.scope.get("user")
+        if not user1 or not user1.is_authenticated:
+            await self.close(code=403)
+            return
+
+        self.user1 = user1
+        self.room_name = f'direct_chat_dock_room_{self.user1.id}'
+
+        await self.channel_layer.group_add(f"user_{self.user1.id}", self.channel_name)
+        await self.channel_layer.group_add(self.room_name, self.channel_name)
+
+        await self.accept()
+
+    async def disconnect(self, close_code):
+        if hasattr(self, 'user1'):
+            try:
+                await self.channel_layer.group_discard(
+                    f"user_{self.user1.id}",
+                    self.channel_name
+                )
+            except Exception:
+                logger.exception("Failed to leave user group for user=%s",
+                                 self.user1.id)
+            try:
+                await self.channel_layer.group_discard(
+                    self.room_name,
+                    self.channel_name
+                )
+            except Exception:
+                logger.exception("Failed to leave room group for user=%s",
+                                 self.user1.id)
+
+    async def receive(self, text_data):
+        try:
+            data = json.loads(text_data)
+        except json.JSONDecodeError:
+            logger.warning("Received invalid JSON from user=%s: %s",
+                           self.user1.id, text_data)
+            return
+
+        msg_type = data.get("type")
+
+        if msg_type != "subscribe_conversations":
+            logger.warning("Only subscribe_conversations is allowed for chat dock, "
+                           "received %s from user=%s", msg_type, self.user1.id)
+            return
+
+        unread = await self._get_unread_conversations()
+        for entry in unread:
+            await self.send(text_data=json.dumps({
+                "type": "chat_update",
+                "other_user_id": entry["other_user_id"],
+                "unread": True,
+                "unread_count": entry["unread_count"],
+            }))
+
+    # --- handler for group_send pushes from DirectChatConsumer ---
+    async def notify_user(self, event):
+        await self.send(text_data=json.dumps(event["event"]))
+
+    @database_sync_to_async
+    def _get_unread_conversations(self):
+        me_receiver = ReceiverModel.objects.filter(user=self.user1).first()
+        if not me_receiver:
+            return []
+        unread_qs = (
+            ChatModel.objects
+            .filter(receiver=me_receiver, is_read=False)
+            .values("sender__user_id")
+            .annotate(unread_count=models.Count("id"))
+        )
+        return [
+            {"other_user_id": row["sender__user_id"], "unread_count": row["unread_count"]}
+            for row in unread_qs
+        ]

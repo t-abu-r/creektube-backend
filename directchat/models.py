@@ -35,9 +35,21 @@ class ChatModel(models.Model):
 
 
 class ChatKeyModel(models.Model):
-    """Contains the chat key that will be used for group name on channel layer"""
     key = models.UUIDField(default=uuid4)
     usernames = models.JSONField(default=list)
+    pair_key = models.CharField(max_length=300, unique=True, db_index=True)
+
+    def save(self, *args, **kwargs):
+        if not self.pair_key:
+            self.pair_key = self.make_pair_key(self.usernames)
+        super().save(*args, **kwargs)
+
+    @staticmethod
+    def make_pair_key(usernames):
+        return "\x1f".join(sorted(usernames))  # \x1f = separator, avoids collisions if a username ever contains "|"
+
+    def __str__(self):
+        return f"Users: {', '.join(self.usernames)}"
 
     def __str__(self):
         text = 'Users: '
@@ -79,3 +91,19 @@ class OnlineUser(models.Model):
 
     def __str__(self):
         return f"{self.user.username} - {self.status}"
+
+
+
+class GroupChat(models.Model):
+
+    name = models.CharField(max_length=255)
+    members = models.ManyToManyField(User, related_name='group_chats')
+
+class GroupChatMessage(models.Model):
+    group_chat = models.ForeignKey(GroupChat, on_delete=models.CASCADE, related_name='messages')
+    sender = models.ForeignKey(User, on_delete=models.CASCADE)
+    text = models.TextField(blank=False)
+    timestamp = models.DateTimeField(auto_now_add=True)
+
+    def __str__(self):
+        return f"{self.sender.username}: {self.text[:20]}... sent to {self.group_chat.name} at {self.timestamp}"
