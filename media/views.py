@@ -417,6 +417,12 @@ def related_youtube_for(native_video, limit=6):
     queries = tags[:1]
     if not queries and native_video.category:
         queries.append(native_video.category.slug.replace("-", " "))
+    if not queries:
+        # Tagless + categoryless rows (e.g. a freshly materialized YouTube
+        # video) still deserve related content, so fall back to its title.
+        title = (getattr(native_video, "title", "") or "").strip()
+        if title:
+            queries.append(title)
     items = []
     seen = set()
     for query in queries:
@@ -1016,6 +1022,10 @@ class LoginWatchVideo(APIView):
         )
 
         if video is None:
+            # A live YouTube ID that isn't stored yet: materialize a public,
+            # pre-approved YOUTUBE row so we can serve it and persist likes.
+            video = ensure_youtube_video(video_id, user=request.user)
+        if video is None:
             return Response({"detail": "Video not found"}, status=404)
 
         # Allow public + unlisted for everyone, private only for owner
@@ -1032,57 +1042,69 @@ class LoginWatchVideo(APIView):
         # Learn tag interests so #hashtags outrank the plain category.
         record_tag_interest_from_watch(request.user, video=video)
 
-        # Native related videos, co-watch powered when enough history exists.
-        if video.category:
-            # Co-watch powered related videos
-            user_recent_ids = ranking.get_user_recent_video_ids(request.user)
-            if user_recent_ids:
-                cowatch_map = ranking.build_cowatch_map(user_recent_ids, [video.id])
-                # Get co-watch related video IDs, sorted by score
-                sorted_cowatch = sorted(cowatch_map.items(), key=lambda x: x[1], reverse=True)
-                cowatch_video_ids = [vid for vid, _ in sorted_cowatch[:10]]
-                if cowatch_video_ids:
-                    cowatch_videos = list(
-                        approved_videos.filter(id__in=cowatch_video_ids)
-                        .select_related('category')
-                        .annotate(
-                            num_likes=Count('likes', distinct=True),
-                            num_dislikes=Count('dispikes', distinct=True),
+        if video.source_type == "YOUTUBE":
+            # Live YouTube video: cross-pollinate with related live YouTube +
+            # native rows so the related sidebar is never empty.
+            related_data = mixed_related_videos(
+                related_native_for(video, limit=6),
+                related_youtube_for(video, limit=6),
+                request,
+            )
+        else:
+            # Native related videos, co-watch powered when enough history exists.
+            if video.category:
+                # Co-watch powered related videos
+                user_recent_ids = ranking.get_user_recent_video_ids(request.user)
+                if user_recent_ids:
+                    cowatch_map = ranking.build_cowatch_map(user_recent_ids, [video.id])
+                    # Get co-watch related video IDs, sorted by score
+                    sorted_cowatch = sorted(cowatch_map.items(), key=lambda x: x[1], reverse=True)
+                    cowatch_video_ids = [vid for vid, _ in sorted_cowatch[:10]]
+                    if cowatch_video_ids:
+                        cowatch_videos = list(
+                            approved_videos.filter(id__in=cowatch_video_ids)
+                            .select_related('category')
+                            .annotate(
+                                num_likes=Count('likes', distinct=True),
+                                num_dislikes=Count('dispikes', distinct=True),
+                            )
                         )
-                    )
-                    # Sort by co-watch score
-                    cowatch_order = {vid: i for i, vid in enumerate(cowatch_video_ids)}
-                    cowatch_videos.sort(key=lambda v: cowatch_order.get(v.id, 999))
-                    # Fill remaining with category-based
-                    remaining = 12 - len(cowatch_videos)
-                    if remaining > 0:
-                        cat_vids = list(
+                        # Sort by co-watch score
+                        cowatch_order = {vid: i for i, vid in enumerate(cowatch_video_ids)}
+                        cowatch_videos.sort(key=lambda v: cowatch_order.get(v.id, 999))
+                        # Fill remaining with category-based
+                        remaining = 12 - len(cowatch_videos)
+                        if remaining > 0:
+                            cat_vids = list(
+                                approved_videos.filter(category=video.category)
+                                .exclude(id=video.id)
+                                .exclude(id__in=cowatch_video_ids)
+                                .order_by('-timestamp')[:remaining]
+                            )
+                            cowatch_videos.extend(cat_vids)
+                        native_related = cowatch_videos[:12]
+                    else:
+                        native_related = list(
                             approved_videos.filter(category=video.category)
                             .exclude(id=video.id)
-                            .exclude(id__in=cowatch_video_ids)
-                            .order_by('-timestamp')[:remaining]
+                            .order_by('-timestamp')[:12]
                         )
-                        cowatch_videos.extend(cat_vids)
-                    native_related = cowatch_videos[:12]
                 else:
                     native_related = list(
                         approved_videos.filter(category=video.category)
                         .exclude(id=video.id)
                         .order_by('-timestamp')[:12]
                     )
+                related_videos = native_related
             else:
-                native_related = list(
+                related_videos = list(
                     approved_videos.filter(category=video.category)
                     .exclude(id=video.id)
                     .order_by('-timestamp')[:12]
                 )
-            related_videos = native_related
-        else:
-            related_videos = list(
-                approved_videos.filter(category=video.category)
-                .exclude(id=video.id)
-                .order_by('-timestamp')[:12]
-            )
+            related_data = VideoSerializer(
+                related_videos, many=True, context={'request': request}
+            ).data
 
         video_author_channel = MediaProfile.objects.filter(user=video.author).first()
 
@@ -1114,7 +1136,7 @@ class LoginWatchVideo(APIView):
 
         return Response({
             "video": VideoSerializer(video, context={'request': request}).data,
-            "related_videos": VideoSerializer(related_videos, many=True, context={'request': request}).data,
+            "related_videos": related_data,
             "like": LikeSerializer(like).data if if_liked else False,
             "like_count": like_count,
             "creek_like_count": creek_like_count,
@@ -1140,16 +1162,30 @@ class GuestWatchVideo(APIView):
         )
 
         if video is None:
+            # A live YouTube ID that isn't stored yet: materialize a public,
+            # pre-approved YOUTUBE row so we can serve it and persist likes.
+            video = ensure_youtube_video(video_id)
+        if video is None:
             return Response({"detail": "Video not found"}, status=404)
 
         approved_videos = Video.objects.filter(is_approved=True, visibility="public", author__is_active=True)
-        video_category = video.category
 
-        related_videos = list(
-            approved_videos.filter(category=video_category)
-            .exclude(id=video.id)
-            .order_by('-timestamp')[:12]
-        )
+        if video.source_type == "YOUTUBE":
+            related_data = mixed_related_videos(
+                related_native_for(video, limit=6),
+                related_youtube_for(video, limit=6),
+                request,
+            )
+        else:
+            related_data = VideoSerializer(
+                list(
+                    approved_videos.filter(category=video.category)
+                    .exclude(id=video.id)
+                    .order_by('-timestamp')[:12]
+                ),
+                many=True,
+                context={'request': request},
+            ).data
 
         creek_like_count = Like.objects.filter(video=video).count()
         like_count = creek_like_count
@@ -1159,7 +1195,7 @@ class GuestWatchVideo(APIView):
 
         return Response({
             "video": VideoSerializer(video, context={'request': request}).data,
-            "related_videos": VideoSerializer(related_videos, many=True, context={'request': request}).data,
+            "related_videos": related_data,
             "like": False,
             "like_count": like_count,
             "creek_like_count": creek_like_count,
