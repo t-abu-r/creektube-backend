@@ -133,7 +133,7 @@ class Video(models.Model):
         ("private", "Private"),
     ]
     SOURCE_TYPE_CHOICES = [
-        ("CREEKTUBE", "CreekTube"),
+        ("KREEKTUBE", "Kreektube"),
         ("YOUTUBE", "YouTube"),
     ]
     CONTENT_TYPE_CHOICES = [
@@ -153,7 +153,7 @@ class Video(models.Model):
     description = models.TextField()
     thumbnail = models.TextField(blank=True, default="")
     video = models.TextField(blank=True, default="")
-    source_type = models.CharField(max_length=20, choices=SOURCE_TYPE_CHOICES, default="CREEKTUBE")
+    source_type = models.CharField(max_length=20, choices=SOURCE_TYPE_CHOICES, default="KREEKTUBE")
     content_type = models.CharField(max_length=10, choices=CONTENT_TYPE_CHOICES, default="VIDEO")
     duration = models.PositiveIntegerField(default=0, help_text="Length in seconds (0 when unknown)")
     youtube_video_id = models.CharField(max_length=11, blank=True, default="")
@@ -359,10 +359,10 @@ class Creek(models.Model):
 
 
 class YouTubeChannelFollow(models.Model):
-    """A CreekTube user "creeking" a YouTube channel.
+    """A Kreektube user "creeking" a YouTube channel.
 
     YouTube channels are followed by channel ID. They surface in the
-    following feed (read-only) alongside CreekTube creators the user creeks.
+    following feed (read-only) alongside Kreektube creators the user creeks.
     """
 
     user = models.ForeignKey(User, on_delete=models.CASCADE, related_name="youtube_channel_follows")

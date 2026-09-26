@@ -109,7 +109,7 @@ class CommentSerializer(serializers.ModelSerializer):
                   "likes_count", "is_liked", "source", "read_only"]
 
     def get_source(self, obj):
-        return "creektube"
+        return "kreektube"
 
     def get_read_only(self, obj):
         return False
@@ -295,7 +295,7 @@ class SnipSerializer(serializers.ModelSerializer):
         return None
 
     def get_source_type(self, obj):
-        return "CREEKTUBE"
+        return "KREEKTUBE"
 
     def get_content_type(self, obj):
         return "SNIP"

@@ -6,7 +6,7 @@ from .models import ChatModel, SenderModel, ReceiverModel, ChatKeyModel
 def _user_avatar(user):
     """Resolve a user's profile picture, preferring the real avatar.
 
-    CreekTube stores user photos on ``accounts.Profile.avatar`` (the same
+    Kreektube stores user photos on ``accounts.Profile.avatar`` (the same
     source comments/snips avatars come from); fall back to the
     ``media.MediaProfile.banner`` only when no avatar is set.
     """

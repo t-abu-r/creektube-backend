@@ -1,5 +1,5 @@
 """
-Snip recommendation engine for CreekTube.
+Snip recommendation engine for Kreektube.
 
 The old snips feed was pure reverse-chronological: newest clip first, no
 personalization, no diversity, no negative feedback. This module replaces it

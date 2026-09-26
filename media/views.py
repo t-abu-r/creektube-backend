@@ -232,8 +232,8 @@ def boost_youtube_watch_interest(user, video):
 def ensure_youtube_video(video_id, user=None):
     """Get-or-create a lightweight stored Video row for a live YouTube ID.
 
-    CreekTube likes/comments are stored against a Video row, so a YouTube
-    video that isn't already part of CreekTube is materialized as a public,
+    Kreektube likes/comments are stored against a Video row, so a YouTube
+    video that isn't already part of Kreektube is materialized as a public,
     pre-approved YOUTUBE row the first time a user interacts with it. The
     video itself is never downloaded: only metadata + the ID are persisted.
     """
@@ -284,7 +284,7 @@ def ensure_youtube_video(video_id, user=None):
 def youtube_snip_like_state(request, video_id):
     """Return ``(is_liked, like_count, youtube_like_count, creek_like_count)``.
 
-    CreekTube likes on YouTube Shorts are stored against the lightweight
+    Kreektube likes on YouTube Shorts are stored against the lightweight
     YOUTUBE Video row (via the ``Like`` model) so they persist, while the
     heart count always mirrors the real YouTube like count.
     """
@@ -302,7 +302,7 @@ def youtube_snip_like_state(request, video_id):
 
 
 # ---------------------------
-# Hybrid feed mixing (CreekTube + YouTube)
+# Hybrid feed mixing (Kreektube + YouTube)
 # ---------------------------
 HYBRID_YOUTUBE_RATIO = 4  # 1 YouTube item every 4 slots
 HYBRID_YOUTUBE_DEFAULT_FRACTION = 0.25
@@ -345,7 +345,7 @@ def build_youtube_follows_feed(user, limit=20, shorts=False):
     """Live YouTube videos from channels the user creeks (read-only).
 
     Only works when the YouTube API key is configured; otherwise returns an
-    empty list so the following feed keeps working with Creektube creators.
+    empty list so the following feed keeps working with Kreektube creators.
     """
     if not user or not user.is_authenticated:
         return []
@@ -404,10 +404,10 @@ def resolve_video_by_id(video_id, queryset):
 
 
 def related_youtube_for(native_video, limit=6):
-    """Live YouTube videos related to a native CreekTube video.
+    """Live YouTube videos related to a native Kreektube video.
 
     Queries by the video's hashtags first (strongest signal), then its
-    category, so CreekTube and YouTube content cross-pollinate. A single
+    category, so Kreektube and YouTube content cross-pollinate. A single
     query is used so the 100-unit search endpoint is never wasted on a low
     yield page.
     """
@@ -434,7 +434,7 @@ def related_youtube_for(native_video, limit=6):
 
 
 def related_native_for(video, category_hint=None, limit=6):
-    """Native CreekTube videos related to a (possibly live) YouTube video.
+    """Native Kreektube videos related to a (possibly live) YouTube video.
 
     Matches the materialized row's tags first, then category; ``category_hint``
     is used for live YouTube videos that have no stored row yet.
@@ -765,7 +765,7 @@ class GuestGetVideo(APIView):
                 Video.objects.filter(is_approved=True, visibility="public", author__is_active=True).select_related('author'),
             )
             if not video and validate_youtube_id(video_id):
-                # A live YouTube ID that isn't stored as a CreekTube row.
+                # A live YouTube ID that isn't stored as a Kreektube row.
                 yt_item = get_youtube_video_details(video_id)
                 if yt_item:
                     return Response(yt_item, status=200)
@@ -1292,7 +1292,7 @@ class SearchUsers(APIView):
 
 
 class InterestTag(APIView):
-    """Every CreekTube video/snip carrying a hashtag, plus YouTube results.
+    """Every Kreektube video/snip carrying a hashtag, plus YouTube results.
 
     Any user can write ``#whatever`` in a title or description; that hashtag
     gets its own page at ``/interests/<tag>``. YouTube videos for the same tag
@@ -1692,7 +1692,7 @@ class CommentVideo(APIView):
         data = serializer.data
 
         # YouTube rows show live YouTube comments (read-only) alongside any
-        # CreekTube comments the community has added.
+        # Kreektube comments the community has added.
         if video.source_type == "YOUTUBE" and video.youtube_video_id:
             yt_comments = youtube_comments(video.youtube_video_id)
             for comment in yt_comments:
@@ -1716,7 +1716,7 @@ class UploadCommentVideo(APIView):
 
         video = resolve_video_by_id(video_id, Video.objects.filter(author__is_active=True))
         if video is None and validate_youtube_id(video_id):
-            # Live YouTube video: materialize a stored row so the CreekTube
+            # Live YouTube video: materialize a stored row so the Kreektube
             # comment lives in our database alongside the read-only YouTube
             # comments.
             video = ensure_youtube_video(video_id, user=author)
@@ -1755,7 +1755,7 @@ class PikeVideo(APIView):
 
         video = resolve_video_by_id(video_id, Video.objects.filter(author__is_active=True))
         if video is None and validate_youtube_id(video_id):
-            # Live YouTube video: materialize a stored row so the CreekTube
+            # Live YouTube video: materialize a stored row so the Kreektube
             # like is tracked against YouTube's real count.
             video = ensure_youtube_video(video_id, user=request.user)
         if video is None:
@@ -1819,7 +1819,7 @@ class DisPikeVideo(APIView):
 
         video = resolve_video_by_id(video_id, Video.objects.filter(author__is_active=True))
         if video is None:
-            # Live YouTube videos (not stored as CreekTube rows) have no dislike state.
+            # Live YouTube videos (not stored as Kreektube rows) have no dislike state.
             return Response({"dispike": False}, status=status.HTTP_200_OK)
 
         dispike, created = DisPike.objects.get_or_create(author=request.user, video=video)
@@ -1877,7 +1877,7 @@ class CreekAccount(APIView):
 
 
 class CreekYouTubeChannel(APIView):
-    """Creek (follow) a YouTube channel, shown read-only alongside Creektube creators."""
+    """Creek (follow) a YouTube channel, shown read-only alongside Kreektube creators."""
 
     permission_classes = [IsAuthenticated]
 
@@ -2012,7 +2012,7 @@ class UploadVideo(APIView):
 
 class AddYouTubeVideo(APIView):
     """
-    Creators add a YouTube video to CreekTube by URL or video ID.
+    Creators add a YouTube video to Kreektube by URL or video ID.
 
     The source_type is ALWAYS set server-side to YOUTUBE — the client can
     never forge a source. YouTube media is never downloaded or stored; only
@@ -2703,7 +2703,7 @@ class LikeSnip(APIView):
 
         # Likes on live YouTube Shorts are stored against the lightweight
         # YOUTUBE Video row so they persist; the count mirrors the YouTube
-        # watch page (YouTube likes + CreekTube likes).
+        # watch page (YouTube likes + Kreektube likes).
         if validate_youtube_id(snip_id):
             video = ensure_youtube_video(snip_id, request.user)
             if not video:
@@ -2773,7 +2773,7 @@ class DislikeSnip(APIView):
         # Live YouTube Shorts are streamed via the Data API; dislikes are not
         # stored against the lightweight Video row (only likes are).
         if validate_youtube_id(snip_id):
-            return Response({"detail": "Dislikes are only available on CreekTube snips"}, status=400)
+            return Response({"detail": "Dislikes are only available on Kreektube snips"}, status=400)
 
         snip = get_object_or_404(Snip.objects.filter(author__is_active=True), id=snip_id)
 
@@ -2823,7 +2823,7 @@ class SaveSnip(APIView):
             return Response({"detail": "Snip ID required"}, status=400)
 
         if validate_youtube_id(snip_id):
-            return Response({"detail": "Saving is only available on CreekTube snips"}, status=400)
+            return Response({"detail": "Saving is only available on Kreektube snips"}, status=400)
 
         snip = get_object_or_404(Snip.objects.filter(author__is_active=True), id=snip_id)
         save, created = SnipSave.objects.get_or_create(author=request.user, snip=snip)
@@ -2875,7 +2875,7 @@ class SnipFeedbackView(APIView):
             return Response({"detail": f"Unknown feedback kind: {kind}"}, status=400)
 
         if validate_youtube_id(snip_id):
-            return Response({"detail": "Feedback is only available on CreekTube snips"}, status=400)
+            return Response({"detail": "Feedback is only available on Kreektube snips"}, status=400)
 
         snip = get_object_or_404(Snip.objects.filter(author__is_active=True), id=snip_id)
 

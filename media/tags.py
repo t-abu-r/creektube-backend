@@ -1,4 +1,4 @@
-"""Hashtag support for CreekTube.
+"""Hashtag support for Kreektube.
 
 Any user can write ``#whatever`` in a title or description and it becomes a
 community tag. Tags power the ``/interests/<tag>`` pages and rank *above*

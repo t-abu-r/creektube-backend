@@ -1,9 +1,9 @@
-"""Unified content classification for CreekTube.
+"""Unified content classification for Kreektube.
 
-Every piece of content (native CreekTube video/snip or a YouTube reference)
+Every piece of content (native Kreektube video/snip or a YouTube reference)
 has two orthogonal attributes:
 
-* ``source_type``  -- CREEKTUBE | YOUTUBE
+* ``source_type``  -- KREEKTUBE | YOUTUBE
 * ``content_type`` -- VIDEO | SNIP
 
 A SNIP is content whose duration is known and strictly under 120 seconds.

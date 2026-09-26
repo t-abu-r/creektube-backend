@@ -38,7 +38,7 @@ class Command(BaseCommand):
         refreshed = 0
         for video in rows:
             if video.author_id != system_user.id:
-                # Keep the CreekTube like associations intact: likes live on
+                # Keep the Kreektube like associations intact: likes live on
                 # the Like table keyed to the row, not the author.
                 video.author = system_user
                 repointed += 1

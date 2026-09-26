@@ -193,11 +193,11 @@ CACHES = {
 
 # Jazzmin admin settings
 JAZZMIN_SETTINGS = {
-    "site_title": "CreekTube Admin",
-    "site_header": "CreekTube",
-    "site_brand": "CreekTube",
-    "welcome_sign": "Welcome to CreekTube Admin",
-    "copyright": "CreekTube",
+    "site_title": "Kreektube Admin",
+    "site_header": "Kreektube",
+    "site_brand": "Kreektube",
+    "welcome_sign": "Welcome to Kreektube Admin",
+    "copyright": "Kreektube",
 }
 
 # File upload limits

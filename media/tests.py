@@ -600,7 +600,7 @@ class AddYouTubeVideoTests(TestCase):
     def test_add_youtube_video_never_trusts_client_source_type(self):
         resp = self.client.post("/media/youtube/add/", {
             "youtube_video_id": "dQw4w9WgXcQ",
-            "source_type": "CREEKTUBE",
+            "source_type": "KREEKTUBE",
         })
         self.assertEqual(resp.status_code, 201)
         self.assertEqual(resp.data["source_type"], "YOUTUBE")
@@ -614,11 +614,11 @@ class UnifiedFeedTests(TestCase):
         self.gaming = CategoryVideo.objects.create(name="Gaming", slug="gaming")
         self.client.force_authenticate(user=self.user)
 
-    def test_native_video_serializes_as_creektube_source(self):
+    def test_native_video_serializes_as_kreektube_source(self):
         native = make_video(self.other, self.gaming, title="native_vid")
         resp = self.client.get("/media/guestgetvideo/?video_id=%d" % native.id)
         self.assertEqual(resp.status_code, 200)
-        self.assertEqual(resp.data["source_type"], "CREEKTUBE")
+        self.assertEqual(resp.data["source_type"], "KREEKTUBE")
         self.assertIsNone(resp.data["embed_url"])
 
     def test_youtube_videos_share_the_feed(self):
@@ -661,7 +661,7 @@ class UnifiedFeedTests(TestCase):
         Video.objects.create(
             author=self.other,
             category=self.gaming,
-            title="CreekTube Search YouTube Test",
+            title="Kreektube Search YouTube Test",
             description="desc",
             is_approved=True,
             source_type="YOUTUBE",
@@ -1037,7 +1037,7 @@ class LiveYouTubeWatchTests(LiveYouTubeMixin, TestCase):
         resp = self.client.post("/media/uploadcommentvideo/", {"video_id": "dQw4w9WgXcQ", "comment": "hi"})
         self.assertEqual(resp.status_code, 201)
         self.assertEqual(resp.data["comment"]["text"], "hi")
-        # CreekTube comments on a live YouTube video are persisted, not rejected.
+        # Kreektube comments on a live YouTube video are persisted, not rejected.
         video = Video.objects.get(youtube_video_id="dQw4w9WgXcQ")
         self.assertTrue(Comment.objects.filter(video=video, text="hi").exists())
         resp = self.client.get("/media/comment/?video_id=dQw4w9WgXcQ")
@@ -1068,7 +1068,7 @@ class LiveYouTubeSnipTests(LiveYouTubeMixin, TestCase):
         self.assertEqual(resp.data["embed_url"], "https://www.youtube.com/embed/dQw4w9WgXcQ")
         self.assertIsNone(resp.data["author_id"])
         self.assertIn("i.ytimg.com", resp.data["thumbnail"])
-        # YouTube likes and CreekTube likes are exposed separately.
+        # YouTube likes and Kreektube likes are exposed separately.
         self.assertIn("youtube_like_count", resp.data)
         self.assertIn("creek_like_count", resp.data)
 
@@ -1482,7 +1482,7 @@ class CrossSourceRelatedTests(TestCase):
         related = views_module.mixed_related_videos([video], [], req)
         self.assertEqual(len(related), 1)
         self.assertEqual(related[0]["id"], video.pk)
-        self.assertEqual(related[0]["source_type"], "CREEKTUBE")
+        self.assertEqual(related[0]["source_type"], "KREEKTUBE")
 
     def test_youtube_row_gets_native_related(self):
         from . import views as views_module

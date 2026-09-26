@@ -1,12 +1,12 @@
-"""YouTube source support for CreekTube.
+"""YouTube source support for Kreektube.
 
-Native CreekTube videos are uploaded and hosted on Cloudinary; YouTube
+Native Kreektube videos are uploaded and hosted on Cloudinary; YouTube
 videos are referenced by their 11-character video ID and played through
-the official YouTube iframe embed. CreekTube never downloads, stores, or
+the official YouTube iframe embed. Kreektube never downloads, stores, or
 proxies YouTube media, and never injects ads of its own.
 
 This module is purely additive: all helpers degrade gracefully so that
-existing CreekTube behavior is unchanged even when no YouTube API key is
+existing Kreektube behavior is unchanged even when no YouTube API key is
 configured.
 """
 
@@ -32,9 +32,9 @@ SHORTS_URL_RE = re.compile(r"youtube\.com/shorts/([A-Za-z0-9_-]{11})")
 EMBED_URL_RE = re.compile(r"youtube\.com/embed/([A-Za-z0-9_-]{11})")
 YOUDOTBE_URL_RE = re.compile(r"youtu\.be/([A-Za-z0-9_-]{11})")
 
-# YouTube Data API video category IDs mapped to CreekTube category slugs.
+# YouTube Data API video category IDs mapped to Kreektube category slugs.
 # When a user watches a YouTube video, its category feeds the same interest
-# scoring that drives the CreekTube home feed, so unknown IDs fall back to a
+# scoring that drives the Kreektube home feed, so unknown IDs fall back to a
 # sensible generic category instead of silently dropping the signal.
 YOUTUBE_CATEGORY_MAP = {
     "1": {"slug": "film-animation", "name": "Film & Animation"},
@@ -58,12 +58,12 @@ YOUTUBE_CATEGORY_MAP = {
     "41": {"slug": "shortform-videos", "name": "Shorts"},
 }
 
-# Generic fallback so every YouTube video maps to *some* CreekTube category.
+# Generic fallback so every YouTube video maps to *some* Kreektube category.
 YOUTUBE_CATEGORY_FALLBACK = {"slug": "entertainment", "name": "Entertainment"}
 
 
 def youtube_category_for(category_id):
-    """Map a YouTube ``categoryId`` to a CreekTube ``{slug, name}`` dict.
+    """Map a YouTube ``categoryId`` to a Kreektube ``{slug, name}`` dict.
 
     Unknown/missing IDs fall back to the generic entertainment category so a
     watch always produces a usable interest signal. Never raises.
@@ -144,11 +144,11 @@ def youtube_duration_seconds(iso8601_duration):
 # ---------------------------------------------------------------------------
 # Feed mixing.
 #
-# The hybrid feed blends native CreekTube uploads with live YouTube results.
+# The hybrid feed blends native Kreektube uploads with live YouTube results.
 # YouTube items are never persisted: they are fetched from the Data API per
 # feed request (with a short TTL cache) and shaped into the same JSON the
 # frontend already understands. A missing API key or a quota/network error
-# degrades to the native-only feed, so CreekTube behavior is never worse.
+# degrades to the native-only feed, so Kreektube behavior is never worse.
 # ---------------------------------------------------------------------------
 
 API_BASE = "https://www.googleapis.com/youtube/v3"
@@ -302,7 +302,7 @@ def _youtube_request(endpoint, params):
 
 
 def _category_to_query(category_slug):
-    """Turn a CreekTube category slug into a YouTube search query."""
+    """Turn a Kreektube category slug into a YouTube search query."""
     if not category_slug:
         return ""
     return category_slug.replace("-", " ").strip()
@@ -598,10 +598,10 @@ def youtube_channel_avatars_for(channel_ids):
 
 
 def _attach_creek_like_state(items, user):
-    """Attach CreekTube like counts and like state to feed-ready item dicts.
+    """Attach Kreektube like counts and like state to feed-ready item dicts.
 
     YouTube shows its own like count (``youtube_like_count``) alongside the
-    CreekTube like (``creek_like_count`` + ``is_liked``) which is tracked
+    Kreektube like (``creek_like_count`` + ``is_liked``) which is tracked
     against the materialized row owned by the reserved system account.
     """
     if not items:
@@ -652,7 +652,7 @@ def youtube_feed_item(item, category_slug="", category_name="", view_count=None,
     """Shape a raw YouTube search API item into a feed-ready video dict.
 
     The shape mirrors what ``VideoSerializer`` already returns so the
-    frontend (VideoCard + WatchVideo) can render YouTube and CreekTube
+    frontend (VideoCard + WatchVideo) can render YouTube and Kreektube
     content uniformly. ``duration`` (seconds) is set when known; otherwise
     the item is left as a plain VIDEO.
     """
@@ -792,7 +792,7 @@ def build_youtube_snips_feed(user=None, interest_categories=None, limit=FEED_TOT
 def youtube_system_user():
     """Return the reserved active account that owns materialized YouTube rows.
 
-    YouTube videos/shorts that are stored as lightweight CreekTube rows (so
+    YouTube videos/shorts that are stored as lightweight Kreektube rows (so
     likes/comments persist) are owned by this system account, never by the
     user who happened to like them. The author shown to viewers comes from the
     real YouTube channel metadata instead.
@@ -813,7 +813,7 @@ def get_youtube_video_details(video_id):
     """Fetch one video's snippet + statistics + contentDetails.
 
     Returns a feed-ready dict (including ``duration`` and ``content_type``)
-    so a YouTube ID that isn't stored as a CreekTube row can still be played
+    so a YouTube ID that isn't stored as a Kreektube row can still be played
     through the iframe embed.
     """
     if not validate_youtube_id(video_id) or not _api_key():
@@ -981,7 +981,7 @@ def _youtube_comment_time(value):
 def youtube_comments(video_id, max_results=20):
     """Fetch top YouTube comments (with replies) for a video.
 
-    Returns a flat list of comment dicts shaped like CreekTube comments but
+    Returns a flat list of comment dicts shaped like Kreektube comments but
     flagged ``source="youtube"`` / ``read_only=True`` so the frontend knows
     they are read-only. Threads are flattened with top-level comments first,
     each followed by its replies (``parent`` = top-level id).

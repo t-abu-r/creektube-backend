@@ -110,17 +110,17 @@ def _clear_auth_cookies(response):
 def _send_code_email(user, code, subject, purpose_label, to_email=None):
     recipient = to_email or user.email
     text_content = (
-        f"Your CreekTube {purpose_label} code is: {code}\n\n"
+        f"Your Kreektube {purpose_label} code is: {code}\n\n"
         f"This code expires in 15 minutes. If you didn't request this, ignore this email."
     )
     html_content = f"""
     <div style="font-family: Arial, sans-serif; max-width: 480px; margin: auto; padding: 24px; border: 1px solid #eee; border-radius: 8px;">
-        <h2 style="color: #1a1a1a;">CreekTube</h2>
+        <h2 style="color: #1a1a1a;">Kreektube</h2>
         <p>Your <strong>{purpose_label}</strong> verification code is:</p>
         <p style="text-align: center; margin: 32px 0; font-size: 32px; font-weight: bold; letter-spacing: 8px; color: #ff3d3d;">{code}</p>
         <p style="font-size: 13px; color: #666;">This code expires in 15 minutes. If you didn't request this, you can safely ignore this email.</p>
         <hr style="border: none; border-top: 1px solid #eee; margin: 24px 0;">
-        <p style="font-size: 12px; color: #999;">— The CreekTube Team</p>
+        <p style="font-size: 12px; color: #999;">— The Kreektube Team</p>
     </div>
     """
     try:
@@ -279,7 +279,7 @@ class UpdateProfileView(APIView):
             api_url = request.build_absolute_uri('/').rstrip('/')
             link = f"{api_url}/api/verify-email/{uid}/{token}/?new_email={new_email}"
             try:
-                send_mail(subject="Verify Your New Email - CreekTube", message=f"Click the link below to verify your new email:\n\n{link}", from_email=None, recipient_list=[new_email], fail_silently=False)
+                send_mail(subject="Verify Your New Email - Kreektube", message=f"Click the link below to verify your new email:\n\n{link}", from_email=None, recipient_list=[new_email], fail_silently=False)
                 response_data["email_verification_sent"] = True
             except Exception as e:
                 return Response({"error": f"Failed to send verification email: {str(e)}"}, status=500)
@@ -446,25 +446,25 @@ class ResetPasswordView(APIView):
         reset_link = f"{settings.FRONTEND_URL}/reset-password/{uid}/{token}/"
 
         try:
-            subject = "Reset Your CreekTube Password"
+            subject = "Reset Your Kreektube Password"
             text_content = (
-                f"Hi,\n\nWe received a request to reset your CreekTube password. "
+                f"Hi,\n\nWe received a request to reset your Kreektube password. "
                 f"Click the link below to choose a new one:\n\n{reset_link}\n\n"
                 f"If you didn't request this, you can safely ignore this email.\n\n"
-                f"This link will expire in 15 minutes.\n\n— The CreekTube Team"
+                f"This link will expire in 15 minutes.\n\n— The Kreektube Team"
             )
             html_content = f"""
             <div style="font-family: Arial, sans-serif; max-width: 480px; margin: auto; padding: 24px; border: 1px solid #eee; border-radius: 8px;">
-                <h2 style="color: #1a1a1a;">CreekTube</h2>
+                <h2 style="color: #1a1a1a;">Kreektube</h2>
                 <p>Hi,</p>
-                <p>We received a request to reset your CreekTube password. Click the button below to choose a new one:</p>
+                <p>We received a request to reset your Kreektube password. Click the button below to choose a new one:</p>
                 <p style="text-align: center; margin: 32px 0;">
                     <a href="{reset_link}" style="background-color: #ff3d3d; color: #fff; padding: 12px 24px; text-decoration: none; border-radius: 6px; font-weight: bold;">Reset Password</a>
                 </p>
                 <p style="font-size: 13px; color: #666;">If the button doesn't work, copy and paste this link into your browser:<br><a href="{reset_link}">{reset_link}</a></p>
                 <p style="font-size: 13px; color: #666;">This link will expire in 15 minutes.</p>
                 <hr style="border: none; border-top: 1px solid #eee; margin: 24px 0;">
-                <p style="font-size: 12px; color: #999;">— The CreekTube Team</p>
+                <p style="font-size: 12px; color: #999;">— The Kreektube Team</p>
             </div>
             """
             email_message = EmailMultiAlternatives(subject=subject, body=text_content, from_email=settings.DEFAULT_FROM_EMAIL, to=[email])
@@ -522,7 +522,7 @@ class SetRecoveryEmail(APIView):
         profile.save(update_fields=["recovery_email", "recovery_email_verified"])
 
         code = _create_security_code(request.user, "recovery_email")
-        _send_code_email(request.user, code, "Verify Your Recovery Email - CreekTube", "recovery email verification", to_email=recovery_email)
+        _send_code_email(request.user, code, "Verify Your Recovery Email - Kreektube", "recovery email verification", to_email=recovery_email)
 
         return Response({"detail": "Verification code sent to your recovery email"}, status=200)
 
@@ -555,7 +555,7 @@ class ResendRecoveryEmailCode(APIView):
             return Response({"error": "No recovery email set"}, status=400)
 
         code = _create_security_code(request.user, "recovery_email")
-        _send_code_email(request.user, code, "Verify Your Recovery Email - CreekTube", "recovery email verification", to_email=profile.recovery_email)
+        _send_code_email(request.user, code, "Verify Your Recovery Email - Kreektube", "recovery email verification", to_email=profile.recovery_email)
 
         return Response({"detail": "New verification code sent"}, status=200)
 
@@ -600,7 +600,7 @@ class RequestPasswordChange(APIView):
             }, status=400)
 
         code = _create_security_code(request.user, "password_change")
-        _send_code_email(request.user, code, "Verify Password Change - CreekTube", "password change")
+        _send_code_email(request.user, code, "Verify Password Change - Kreektube", "password change")
 
         return Response({
             "detail": "Verification code sent to your recovery email",
@@ -658,7 +658,7 @@ class ForgotPasswordRequest(APIView):
             }, status=200)
 
         code = _create_security_code(user, "password_reset")
-        _send_code_email(user, code, "Reset Your CreekTube Password", "password reset")
+        _send_code_email(user, code, "Reset Your Kreektube Password", "password reset")
 
         return Response({
             "detail": "If an account exists with this email, a recovery code has been sent.",
@@ -712,30 +712,30 @@ class ForgotPasswordResendCode(APIView):
             return Response({"error": "No verified recovery email found"}, status=400)
 
         code = _create_security_code(user, "password_reset")
-        _send_code_email(user, code, "Reset Your CreekTube Password", "password reset")
+        _send_code_email(user, code, "Reset Your Kreektube Password", "password reset")
 
         return Response({"detail": "New verification code sent"}, status=200)
 
 
 def _send_forgot_password_email(user, reset_link):
-    subject = "Reset Your CreekTube Password"
+    subject = "Reset Your Kreektube Password"
     text_content = (
-        f"Hi,\n\nWe received a request to reset your CreekTube password. "
+        f"Hi,\n\nWe received a request to reset your Kreektube password. "
         f"Click the link below to choose a new one:\n\n{reset_link}\n\n"
         f"If you didn't request this, you can safely ignore this email.\n\n"
-        f"This link will expire in 15 minutes.\n\n— The CreekTube Team"
+        f"This link will expire in 15 minutes.\n\n— The Kreektube Team"
     )
     html_content = f"""
     <div style="font-family: Arial, sans-serif; max-width: 480px; margin: auto; padding: 24px; border: 1px solid #eee; border-radius: 8px;">
-        <h2 style="color: #1a1a1a;">CreekTube</h2>
+        <h2 style="color: #1a1a1a;">Kreektube</h2>
         <p>Hi,</p>
-        <p>We received a request to reset your CreekTube password. Click the button below to choose a new one:</p>
+        <p>We received a request to reset your Kreektube password. Click the button below to choose a new one:</p>
         <p style="text-align: center; margin: 32px 0;">
             <a href="{reset_link}" style="background-color: #ff3d3d; color: #fff; padding: 12px 24px; text-decoration: none; border-radius: 6px; font-weight: bold;">Reset Password</a>
         </p>
         <p style="font-size: 13px; color: #666;">This link will expire in 15 minutes.</p>
         <hr style="border: none; border-top: 1px solid #eee; margin: 24px 0;">
-        <p style="font-size: 12px; color: #999;">— The CreekTube Team</p>
+        <p style="font-size: 12px; color: #999;">— The Kreektube Team</p>
     </div>
     """
     email_message = EmailMultiAlternatives(subject=subject, body=text_content, from_email=settings.DEFAULT_FROM_EMAIL, to=[user.email])

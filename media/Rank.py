@@ -1,5 +1,5 @@
 """
-Feed ranking for creektube.
+Feed ranking for kreektube.
 
 Replaces the old "strict category bucket" ordering with a weighted composite
 score, so the feed blends interest match, engagement, recency, and follows
